@@ -4,4 +4,6 @@
 #![warn(missing_docs)]
 
 pub mod event;
+pub mod projection;
+pub mod projections;
 pub mod store;
