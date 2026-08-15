@@ -11,10 +11,15 @@ are launched as apps. `SESH` is the layer that ties the room, the people in it,
 and its entire history into one thing.
 
 - **Vision and architecture:** [`docs/superpowers/specs/2026-08-15-sesh-vision-design.md`](docs/superpowers/specs/2026-08-15-sesh-vision-design.md)
+- **Arc 1 plan:** [`docs/superpowers/plans/2026-08-15-arc1-log-and-room.md`](docs/superpowers/plans/2026-08-15-arc1-log-and-room.md)
 
 ## Status
 
-Design approved. No implementation yet — Arc 1 spec is next.
+Design approved, Arc 1 planned. No implementation yet.
+
+Arc 1 — *The Log & The Room* — is done when the Pi boots to SESH's own
+screen and launches and quits Kodi, RetroArch, and Moonlight from a
+controller, with every launch and exit recorded in the event log.
 
 ## Development
 
