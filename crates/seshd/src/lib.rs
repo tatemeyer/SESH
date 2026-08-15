@@ -4,3 +4,4 @@
 #![warn(missing_docs)]
 
 pub mod event;
+pub mod store;
