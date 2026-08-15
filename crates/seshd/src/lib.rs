@@ -6,4 +6,5 @@
 pub mod event;
 pub mod projection;
 pub mod projections;
+pub mod room;
 pub mod store;
