@@ -4,6 +4,7 @@
 #![warn(missing_docs)]
 
 pub mod event;
+pub mod launcher;
 pub mod projection;
 pub mod projections;
 pub mod room;
