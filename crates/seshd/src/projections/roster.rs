@@ -107,6 +107,15 @@ mod tests {
             incremental.apply(e);
         }
 
+        // Two independent assertions: the literal pins `apply`'s actual
+        // behavior for this sequence, while the cross-check guards the
+        // incremental-equals-rebuild property itself (which only gains
+        // teeth once some future `Projection` overrides `rebuild`
+        // independently of `apply`) — neither is redundant with the other.
+        assert_eq!(
+            incremental.present(),
+            vec!["marcus".to_string(), "sam".to_string()]
+        );
         assert_eq!(incremental.present(), Roster::rebuild(&events).present());
     }
 }
