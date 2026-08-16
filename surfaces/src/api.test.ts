@@ -48,6 +48,32 @@ describe("quitApp", () => {
   });
 });
 
+/** Mirrors `RECONNECT_DELAY_MS` in `api.ts`, which is deliberately private. */
+const RECONNECT_DELAY = 1000;
+
+type SocketHandlers = Record<"onopen" | "onmessage" | "onclose" | "onerror", (e?: unknown) => void>;
+
+/**
+ * A WebSocket stand-in that records one handler set per constructed socket,
+ * so a test can drive close/open on each generation independently.
+ */
+function fakeSockets() {
+  const handlers: SocketHandlers[] = [];
+  const FakeWs = vi.fn(function (this: Record<string, unknown>) {
+    const own = {} as SocketHandlers;
+    handlers.push(own);
+    this.close = vi.fn();
+    for (const name of ["onopen", "onmessage", "onclose", "onerror"] as const) {
+      Object.defineProperty(this, name, {
+        set: (fn: (e?: unknown) => void) => {
+          own[name] = fn;
+        },
+      });
+    }
+  });
+  return { FakeWs, handlers };
+}
+
 describe("connectEvents", () => {
   it("parses incoming frames and hands them to the callback", () => {
     let onmessage: ((e: { data: string }) => void) | null = null;
@@ -69,5 +95,60 @@ describe("connectEvents", () => {
 
     disconnect();
     expect(close).toHaveBeenCalled();
+  });
+
+  it("reconnects after the socket closes and re-fetches on the new socket", () => {
+    vi.useFakeTimers();
+    const { FakeWs, handlers } = fakeSockets();
+    const onReconnect = vi.fn();
+
+    connectEvents(() => {}, FakeWs as unknown as typeof WebSocket, onReconnect);
+    expect(FakeWs).toHaveBeenCalledTimes(1);
+
+    // seshd restarted: Restart=always drops the socket while Chromium stays up.
+    handlers[0].onclose();
+    vi.advanceTimersByTime(RECONNECT_DELAY);
+    expect(FakeWs).toHaveBeenCalledTimes(2);
+
+    handlers[1].onopen();
+    expect(onReconnect).toHaveBeenCalledTimes(1);
+
+    vi.useRealTimers();
+  });
+
+  it("does not fire onReconnect for the very first connection", () => {
+    const { FakeWs, handlers } = fakeSockets();
+    const onReconnect = vi.fn();
+
+    connectEvents(() => {}, FakeWs as unknown as typeof WebSocket, onReconnect);
+    handlers[0].onopen();
+
+    expect(onReconnect).not.toHaveBeenCalled();
+  });
+
+  it("disconnect cancels a retry that is already pending", () => {
+    vi.useFakeTimers();
+    const { FakeWs, handlers } = fakeSockets();
+
+    const disconnect = connectEvents(() => {}, FakeWs as unknown as typeof WebSocket);
+    handlers[0].onclose();
+    disconnect();
+    vi.advanceTimersByTime(RECONNECT_DELAY * 10);
+
+    expect(FakeWs).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
+  it("stops reconnecting once disconnected", () => {
+    vi.useFakeTimers();
+    const { FakeWs, handlers } = fakeSockets();
+
+    const disconnect = connectEvents(() => {}, FakeWs as unknown as typeof WebSocket);
+    disconnect();
+    handlers[0].onclose();
+    vi.advanceTimersByTime(RECONNECT_DELAY * 10);
+
+    expect(FakeWs).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
   });
 });

@@ -81,11 +81,17 @@ function pollGamepad(): void {
   requestAnimationFrame(pollGamepad);
 }
 
-connectEvents((event: SeshEvent) => {
-  if (event.kind === "app.launched" || event.kind === "app.exited") {
-    void refresh();
-  }
-});
+connectEvents(
+  (event: SeshEvent) => {
+    if (event.kind === "app.launched" || event.kind === "app.exited") {
+      void refresh();
+    }
+  },
+  undefined,
+  // A dropped socket means seshd restarted. The surface is level-triggered,
+  // so re-fetch current state rather than replaying the missed events.
+  () => void refresh(),
+);
 
 void refresh();
 requestAnimationFrame(pollGamepad);

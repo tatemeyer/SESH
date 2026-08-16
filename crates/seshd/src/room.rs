@@ -14,8 +14,9 @@ use crate::projection::Projection;
 use crate::projections::roster::Roster;
 use crate::store::Store;
 
-/// Broadcast backlog. A subscriber that falls this far behind is lagged,
-/// and reconnects with `GET /api/events?after=<last_id>` to catch up.
+/// Broadcast backlog. A subscriber that falls this far behind is lagged.
+/// Surfaces are level-triggered: a lagged or dropped client reconnects and
+/// re-fetches current state rather than replaying the events it missed.
 const EVENT_CHANNEL_CAPACITY: usize = 256;
 
 /// The live room: the event log plus every view derived from it.

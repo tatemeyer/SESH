@@ -908,8 +908,9 @@ Expected: FAIL — `cannot find type Room`.
 Insert into `crates/seshd/src/room.rs`, between the `use` block and the test module:
 
 ```rust
-/// Broadcast backlog. A subscriber that falls this far behind is lagged,
-/// and reconnects with `GET /api/events?after=<last_id>` to catch up.
+/// Broadcast backlog. A subscriber that falls this far behind is lagged.
+/// Surfaces are level-triggered: a lagged or dropped client reconnects and
+/// re-fetches current state rather than replaying the events it missed.
 const EVENT_CHANNEL_CAPACITY: usize = 256;
 
 /// The live room: the event log plus every view derived from it.
@@ -2418,9 +2419,10 @@ Expected: FAIL — `cannot find function router_with_ws`.
 //! The live event feed.
 //!
 //! Every surface — the TV and, from Arc 3, phones — holds one of these
-//! sockets open and re-renders from it. Clients that fall behind the
-//! broadcast backlog are dropped and expected to reconnect and catch up
-//! via `GET /api/events?after=<last_id>`.
+//! sockets open and re-renders from it. Surfaces are level-triggered: a
+//! client whose socket drops, or that falls behind the broadcast backlog,
+//! reconnects and re-fetches current state (`GET /api/apps`) rather than
+//! replaying the events it missed.
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
@@ -2824,6 +2826,32 @@ describe("quitApp", () => {
   });
 });
 
+/** Mirrors `RECONNECT_DELAY_MS` in `api.ts`, which is deliberately private. */
+const RECONNECT_DELAY = 1000;
+
+type SocketHandlers = Record<"onopen" | "onmessage" | "onclose" | "onerror", (e?: unknown) => void>;
+
+/**
+ * A WebSocket stand-in that records one handler set per constructed socket,
+ * so a test can drive close/open on each generation independently.
+ */
+function fakeSockets() {
+  const handlers: SocketHandlers[] = [];
+  const FakeWs = vi.fn(function (this: Record<string, unknown>) {
+    const own = {} as SocketHandlers;
+    handlers.push(own);
+    this.close = vi.fn();
+    for (const name of ["onopen", "onmessage", "onclose", "onerror"] as const) {
+      Object.defineProperty(this, name, {
+        set: (fn: (e?: unknown) => void) => {
+          own[name] = fn;
+        },
+      });
+    }
+  });
+  return { FakeWs, handlers };
+}
+
 describe("connectEvents", () => {
   it("parses incoming frames and hands them to the callback", () => {
     let onmessage: ((e: { data: string }) => void) | null = null;
@@ -2845,6 +2873,61 @@ describe("connectEvents", () => {
 
     disconnect();
     expect(close).toHaveBeenCalled();
+  });
+
+  it("reconnects after the socket closes and re-fetches on the new socket", () => {
+    vi.useFakeTimers();
+    const { FakeWs, handlers } = fakeSockets();
+    const onReconnect = vi.fn();
+
+    connectEvents(() => {}, FakeWs as unknown as typeof WebSocket, onReconnect);
+    expect(FakeWs).toHaveBeenCalledTimes(1);
+
+    // seshd restarted: Restart=always drops the socket while Chromium stays up.
+    handlers[0].onclose();
+    vi.advanceTimersByTime(RECONNECT_DELAY);
+    expect(FakeWs).toHaveBeenCalledTimes(2);
+
+    handlers[1].onopen();
+    expect(onReconnect).toHaveBeenCalledTimes(1);
+
+    vi.useRealTimers();
+  });
+
+  it("does not fire onReconnect for the very first connection", () => {
+    const { FakeWs, handlers } = fakeSockets();
+    const onReconnect = vi.fn();
+
+    connectEvents(() => {}, FakeWs as unknown as typeof WebSocket, onReconnect);
+    handlers[0].onopen();
+
+    expect(onReconnect).not.toHaveBeenCalled();
+  });
+
+  it("disconnect cancels a retry that is already pending", () => {
+    vi.useFakeTimers();
+    const { FakeWs, handlers } = fakeSockets();
+
+    const disconnect = connectEvents(() => {}, FakeWs as unknown as typeof WebSocket);
+    handlers[0].onclose();
+    disconnect();
+    vi.advanceTimersByTime(RECONNECT_DELAY * 10);
+
+    expect(FakeWs).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
+  it("stops reconnecting once disconnected", () => {
+    vi.useFakeTimers();
+    const { FakeWs, handlers } = fakeSockets();
+
+    const disconnect = connectEvents(() => {}, FakeWs as unknown as typeof WebSocket);
+    disconnect();
+    handlers[0].onclose();
+    vi.advanceTimersByTime(RECONNECT_DELAY * 10);
+
+    expect(FakeWs).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
   });
 });
 ```
@@ -2945,37 +3028,77 @@ export async function quitApp(fetchFn: typeof fetch = fetch): Promise<void> {
   await ok(await fetchFn("/api/apps/quit", { method: "POST" }));
 }
 
+/** How long to wait before rebuilding a dropped event socket. */
+const RECONNECT_DELAY_MS = 1000;
+
 /**
  * Subscribe to the live event feed. Returns a function that disconnects.
  * The socket URL is derived from the page so this works identically
  * against the Vite dev proxy and against seshd on the Pi.
+ *
+ * The socket reconnects itself: `seshd.service` sets `Restart=always`, so a
+ * crash or an upgrade drops every surface's socket while Chromium stays up.
+ * Without this the TV would show permanently stale state with no symptom.
+ * `onReconnect` fires once each time a *replacement* socket opens — the
+ * surface is level-triggered, so it re-fetches truth rather than replaying
+ * the events it missed.
  */
 export function connectEvents(
   onEvent: (event: SeshEvent) => void,
   WsCtor: typeof WebSocket = WebSocket,
+  onReconnect?: () => void,
 ): () => void {
   const protocol = typeof location !== "undefined" && location.protocol === "https:" ? "wss" : "ws";
   const host = typeof location !== "undefined" ? location.host : "localhost:7373";
-  const socket = new WsCtor(`${protocol}://${host}/ws`);
+  const url = `${protocol}://${host}/ws`;
 
-  socket.onmessage = (message: MessageEvent) => {
-    try {
-      onEvent(JSON.parse(message.data as string) as SeshEvent);
-    } catch (error) {
-      // A frame we cannot parse is not worth tearing the feed down for, but it
-      // must not vanish silently — on the TV there is no console to inspect.
-      console.error("sesh: unparseable event frame", error, message.data);
-    }
+  let socket: WebSocket | null = null;
+  let retry: ReturnType<typeof setTimeout> | undefined;
+  let disconnected = false;
+
+  function connect(isReconnect: boolean): void {
+    const sock = new WsCtor(url);
+    socket = sock;
+
+    sock.onopen = () => {
+      if (isReconnect) onReconnect?.();
+    };
+
+    sock.onmessage = (message: MessageEvent) => {
+      try {
+        onEvent(JSON.parse(message.data as string) as SeshEvent);
+      } catch (error) {
+        // A frame we cannot parse is not worth tearing the feed down for, but it
+        // must not vanish silently — on the TV there is no console to inspect.
+        console.error("sesh: unparseable event frame", error, message.data);
+      }
+    };
+
+    // A failed socket fires error then close, so close alone drives the retry.
+    sock.onerror = () => {
+      console.error("sesh: event socket error");
+    };
+
+    sock.onclose = () => {
+      if (disconnected) return;
+      retry = setTimeout(() => connect(true), RECONNECT_DELAY_MS);
+    };
+  }
+
+  connect(false);
+
+  return () => {
+    disconnected = true;
+    if (retry !== undefined) clearTimeout(retry);
+    socket?.close();
   };
-
-  return () => socket.close();
 }
 ```
 
 - [ ] **Step 6: Run the tests to verify they pass**
 
 Run: `cd surfaces && npx tsc --noEmit && npm test`
-Expected: `tsc --noEmit` clean; PASS — 9 nav tests, 6 api tests.
+Expected: `tsc --noEmit` clean; PASS — 9 nav tests, 10 api tests.
 
 Note: `vite build` (part of the `npm run build` script) is deliberately not
 run in this task. `index.html`'s `<script src="/src/main.ts">` entry point
@@ -3296,6 +3419,9 @@ const KEYS: Record<string, () => void | Promise<void>> = {
 };
 
 window.addEventListener("keydown", (e) => {
+  // Without this, holding Enter fires `activate` at the OS key-repeat rate,
+  // pushing overlapping launches at seshd for as long as the key is down.
+  if (e.repeat) return;
   const handler = KEYS[e.key];
   if (handler) {
     e.preventDefault();
@@ -3333,11 +3459,17 @@ function pollGamepad(): void {
   requestAnimationFrame(pollGamepad);
 }
 
-connectEvents((event: SeshEvent) => {
-  if (event.kind === "app.launched" || event.kind === "app.exited") {
-    void refresh();
-  }
-});
+connectEvents(
+  (event: SeshEvent) => {
+    if (event.kind === "app.launched" || event.kind === "app.exited") {
+      void refresh();
+    }
+  },
+  undefined,
+  // A dropped socket means seshd restarted. The surface is level-triggered,
+  // so re-fetch current state rather than replaying the missed events.
+  () => void refresh(),
+);
 
 void refresh();
 requestAnimationFrame(pollGamepad);
@@ -3346,7 +3478,7 @@ requestAnimationFrame(pollGamepad);
 - [ ] **Step 6: Run the tests to verify they pass**
 
 Run: `cd surfaces && npm test`
-Expected: PASS — 8 nav, 6 api, 6 home.
+Expected: PASS — 9 nav, 10 api, 7 home.
 
 - [ ] **Step 7: Verify the build and see it in a browser**
 

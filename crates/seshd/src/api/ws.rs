@@ -1,9 +1,10 @@
 //! The live event feed.
 //!
 //! Every surface — the TV and, from Arc 3, phones — holds one of these
-//! sockets open and re-renders from it. Clients that fall behind the
-//! broadcast backlog are dropped and expected to reconnect and catch up
-//! via `GET /api/events?after=<last_id>`.
+//! sockets open and re-renders from it. Surfaces are level-triggered: a
+//! client whose socket drops, or that falls behind the broadcast backlog,
+//! reconnects and re-fetches current state (`GET /api/apps`) rather than
+//! replaying the events it missed.
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
