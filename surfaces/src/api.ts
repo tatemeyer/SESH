@@ -64,8 +64,10 @@ export function connectEvents(
   socket.onmessage = (message: MessageEvent) => {
     try {
       onEvent(JSON.parse(message.data as string) as SeshEvent);
-    } catch {
-      // A frame we cannot parse is not worth tearing the feed down for.
+    } catch (error) {
+      // A frame we cannot parse is not worth tearing the feed down for, but it
+      // must not vanish silently — on the TV there is no console to inspect.
+      console.error("sesh: unparseable event frame", error, message.data);
     }
   };
 

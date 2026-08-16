@@ -2679,6 +2679,10 @@ describe("move", () => {
     expect(move(1, COUNT, COLUMNS, "up")).toBe(1);
   });
 
+  it("stays put when there is no row below", () => {
+    expect(move(3, COUNT, COLUMNS, "down")).toBe(3);
+  });
+
   it("returns 0 for an empty grid", () => {
     expect(move(0, 0, COLUMNS, "right")).toBe(0);
   });
@@ -2875,8 +2879,10 @@ export function connectEvents(
   socket.onmessage = (message: MessageEvent) => {
     try {
       onEvent(JSON.parse(message.data as string) as SeshEvent);
-    } catch {
-      // A frame we cannot parse is not worth tearing the feed down for.
+    } catch (error) {
+      // A frame we cannot parse is not worth tearing the feed down for, but it
+      // must not vanish silently — on the TV there is no console to inspect.
+      console.error("sesh: unparseable event frame", error, message.data);
     }
   };
 
@@ -2887,7 +2893,7 @@ export function connectEvents(
 - [ ] **Step 6: Run the tests to verify they pass**
 
 Run: `cd surfaces && npx tsc --noEmit && npm test`
-Expected: `tsc --noEmit` clean; PASS — 8 nav tests, 6 api tests.
+Expected: `tsc --noEmit` clean; PASS — 9 nav tests, 6 api tests.
 
 Note: `vite build` (part of the `npm run build` script) is deliberately not
 run in this task. `index.html`'s `<script src="/src/main.ts">` entry point

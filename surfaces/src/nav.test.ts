@@ -35,6 +35,10 @@ describe("move", () => {
     expect(move(1, COUNT, COLUMNS, "up")).toBe(1);
   });
 
+  it("stays put when there is no row below", () => {
+    expect(move(3, COUNT, COLUMNS, "down")).toBe(3);
+  });
+
   it("returns 0 for an empty grid", () => {
     expect(move(0, 0, COLUMNS, "right")).toBe(0);
   });
