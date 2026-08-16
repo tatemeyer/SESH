@@ -27,10 +27,14 @@ else
     CHROMIUM=chromium
 fi
 
+# --password-store=basic: without it Chromium asks gnome-keyring to unlock,
+# which throws a modal "Unlock Keyring — Authentication required" dialog over
+# the kiosk. There is no keyboard on a TV to dismiss it, so the room is stuck.
 "$CHROMIUM" \
     --kiosk \
     --ozone-platform=wayland \
     --enable-features=UseOzonePlatform \
+    --password-store=basic \
     --noerrdialogs \
     --disable-infobars \
     --disable-session-crashed-bubble \

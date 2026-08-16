@@ -82,6 +82,23 @@ block from `~/.bash_profile`.
 You can still reach the desktop temporarily without undoing anything —
 switch to another VT with `Ctrl+Alt+F2` and log in there.
 
+**Three non-obvious dependencies.** All three were found on real hardware; each
+fails in a way that does not point at its own cause. `install.sh` and
+`deploy/labwc/autostart` now handle all three, so this is background — read it
+if you are installing by hand or debugging a partial install.
+
+| Missing | Symptom | Handled by |
+|---|---|---|
+| `fonts-noto-color-emoji` | Every tile shows an empty tofu box instead of an icon | `install.sh` apt line |
+| `qt6-wayland` | Moonlight dies with SIGABRT ~600ms after launch; looks like a SESH launcher bug | `install.sh` apt line |
+| `--password-store=basic` | A modal *"Unlock Keyring — Authentication required"* dialog covers the kiosk, undismissable from a TV | `labwc/autostart` |
+
+The tile icons are emoji codepoints in `surfaces/src/styles.css`; the font is
+what makes them render. Moonlight is Qt6 while Pi OS ships only the Qt5 Wayland
+plugin, so without `qt6-wayland` it cannot initialize a platform plugin at all.
+The keyring dialog was confirmed on the Desktop image — it may not occur on
+Lite, where gnome-keyring is usually absent, but the flag is harmless there.
+
 **Moonlight is not in the Pi OS repositories.** `install.sh` warns rather than
 failing. Install `moonlight-qt` from
 [the Moonlight project](https://github.com/moonlight-stream/moonlight-qt) and
