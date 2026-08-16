@@ -24,6 +24,7 @@ pub struct Room {
     store: Store,
     events_tx: broadcast::Sender<Event>,
     roster: Mutex<Roster>,
+    write: Mutex<()>,
 }
 
 impl Room {
@@ -37,11 +38,21 @@ impl Room {
             store,
             events_tx,
             roster: Mutex::new(roster),
+            write: Mutex::new(()),
         }))
     }
 
     /// Append an event, update projections, and fan it out. The only write path.
     pub fn record(&self, new: NewEvent) -> Result<Event> {
+        // `Store::append` takes and drops the connection lock internally, so
+        // without this guard two writers could append, then apply and publish
+        // in the opposite order — breaking the one property the whole design
+        // exists for: the live projection equals a rebuild from the log.
+        //
+        // Lock order is Launcher::current -> Room::write -> Store::conn ->
+        // Room::roster, never reversed. `record` is synchronous, so no guard
+        // is ever held across an `.await`.
+        let _write = self.write.lock().expect("write mutex poisoned");
         let event = self.store.append(new)?;
         self.roster
             .lock()
@@ -127,5 +138,75 @@ mod tests {
 
         let reopened = Room::new(Store::open(&path).unwrap()).unwrap();
         assert_eq!(reopened.roster(), vec!["sam".to_string()]);
+    }
+
+    // The two tests below assert the invariant `Room::write` exists to hold.
+    // They are invariant guards, not a reproduction: the unsynchronised window
+    // between `Store::append` releasing the connection lock and `roster.apply`
+    // is a few instructions wide, and removing the guard does not make either
+    // test fail on demand. What enforces the property is the guard itself.
+    fn record_concurrently(
+        room: &Arc<Room>,
+        threads: usize,
+        each: impl Fn(&Room, usize) + Copy + Send + 'static,
+    ) {
+        let handles: Vec<_> = (0..threads)
+            .map(|t| {
+                let room = room.clone();
+                std::thread::spawn(move || each(&room, t))
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn concurrent_records_reach_subscribers_in_log_order() {
+        let room = room();
+        let mut rx = room.subscribe();
+
+        record_concurrently(&room, 8, |room, t| {
+            for i in 0..8 {
+                room.record(NewEvent::new(format!("k{t}-{i}"))).unwrap();
+            }
+        });
+
+        let mut ids = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            ids.push(event.id);
+        }
+
+        assert_eq!(ids.len(), 64, "every record must reach the subscriber");
+        let mut in_order = ids.clone();
+        in_order.sort_unstable();
+        assert_eq!(
+            ids, in_order,
+            "the bus must publish in the order the log assigned ids"
+        );
+    }
+
+    #[test]
+    fn concurrent_records_leave_the_roster_equal_to_a_rebuild() {
+        let room = room();
+
+        // Two writers toggling the *same* actor is the Arc 3 BLE-watcher
+        // case: whichever order the log lands in, the cached roster has to
+        // agree with a rebuild over that log.
+        record_concurrently(&room, 4, |room, _| {
+            for _ in 0..20 {
+                room.record(NewEvent::new(kind::PRESENCE_ARRIVED).actor("tate"))
+                    .unwrap();
+                room.record(NewEvent::new(kind::PRESENCE_LEFT).actor("tate"))
+                    .unwrap();
+            }
+        });
+
+        let rebuilt = Roster::rebuild(&room.events_since(0, -1).unwrap());
+        assert_eq!(
+            room.roster(),
+            rebuilt.present(),
+            "the live projection must equal a rebuild from the log"
+        );
     }
 }
