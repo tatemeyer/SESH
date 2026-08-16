@@ -18,7 +18,7 @@ Every task's requirements implicitly include this section.
   originally arbitrary 1.75 floor: `Cargo.lock` is committed in v4
   format, which requires Cargo 1.78+; 1.82 is the floor actually
   verified against.)
-- **Pinned crate versions** (use exactly these majors/minors): `axum = "0.7"`, `tokio = { version = "1", features = ["full"] }`, `rusqlite = { version = "0.31", features = ["bundled"] }`, `serde = { version = "1", features = ["derive"] }`, `serde_json = "1"`, `toml = "0.8"`, `anyhow = "1"`, `tower-http = { version = "0.5", features = ["fs"] }`, `clap = { version = "4", features = ["derive"] }`, `tracing = "0.1"`, `tracing-subscriber = "0.3"`. Dev-dependencies: `tokio-tungstenite = "0.21"`, `futures-util = "0.3"`, `tempfile = "3"`.
+- **Pinned crate versions** (use exactly these majors/minors): `axum = "0.7"`, `tokio = { version = "1", features = ["full"] }`, `rusqlite = { version = "0.31", features = ["bundled"] }`, `serde = { version = "1", features = ["derive"] }`, `serde_json = "1"`, `toml = "0.8"`, `anyhow = "1"`, `tower-http = { version = "0.5", features = ["fs"] }`, `clap = { version = "4", features = ["derive"] }`, `tracing = "0.1"`, `tracing-subscriber = { version = "0.3", features = ["env-filter"] }` (the `env-filter` feature is required by `main.rs`'s `tracing_subscriber::EnvFilter` usage and by `RUST_LOG` in `deploy/seshd.service` — do not strip it as unused). Dev-dependencies: `tokio-tungstenite = "0.21"`, `futures-util = "0.3"`, `tempfile = "3"`.
 - **axum 0.7 path syntax is `:id`**, not `{id}`. Do not use axum 0.8 syntax.
 - `rusqlite`'s `bundled` feature is mandatory — the Pi must not need a system SQLite.
 - **The `events` table is append-only.** No `UPDATE` or `DELETE` statement may ever target it, in code or in migrations. There is no API to modify or remove an event.
@@ -117,7 +117,7 @@ tokio = { version = "1", features = ["full"] }
 toml = "0.8"
 tower-http = { version = "0.5", features = ["fs"] }
 tracing = "0.1"
-tracing-subscriber = "0.3"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
 futures-util = "0.3"
