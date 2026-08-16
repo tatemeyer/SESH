@@ -1372,6 +1372,7 @@ pub struct MockPlatform {
     next_pid: Mutex<Pid>,
     running: Mutex<HashSet<Pid>>,
     spawned: Mutex<Vec<(String, Vec<String>)>>,
+    fail_next_kill: Mutex<bool>,
 }
 
 impl MockPlatform {
@@ -1401,7 +1402,20 @@ impl MockPlatform {
 
     /// Mark a process as having exited on its own, without SESH killing it.
     pub fn simulate_exit(&self, pid: Pid) {
-        self.running.lock().expect("running mutex poisoned").remove(&pid);
+        self.running
+            .lock()
+            .expect("running mutex poisoned")
+            .remove(&pid);
+    }
+
+    /// Make the next call to `kill` return an error instead of succeeding.
+    /// The flag is one-shot: it resets after the next `kill` call, whether
+    /// or not that call was actually reached.
+    pub fn fail_next_kill(&self) {
+        *self
+            .fail_next_kill
+            .lock()
+            .expect("fail_next_kill mutex poisoned") = true;
     }
 }
 
@@ -1413,7 +1427,10 @@ impl Platform for MockPlatform {
         let mut next = self.next_pid.lock().expect("next_pid mutex poisoned");
         *next += 1;
         let pid = *next;
-        self.running.lock().expect("running mutex poisoned").insert(pid);
+        self.running
+            .lock()
+            .expect("running mutex poisoned")
+            .insert(pid);
         self.spawned
             .lock()
             .expect("spawned mutex poisoned")
@@ -1422,12 +1439,28 @@ impl Platform for MockPlatform {
     }
 
     fn kill(&self, pid: Pid) -> Result<()> {
-        self.running.lock().expect("running mutex poisoned").remove(&pid);
+        let mut fail_next = self
+            .fail_next_kill
+            .lock()
+            .expect("fail_next_kill mutex poisoned");
+        if *fail_next {
+            *fail_next = false;
+            return Err(anyhow!("simulated kill failure"));
+        }
+        drop(fail_next);
+
+        self.running
+            .lock()
+            .expect("running mutex poisoned")
+            .remove(&pid);
         Ok(())
     }
 
     fn is_running(&self, pid: Pid) -> bool {
-        self.running.lock().expect("running mutex poisoned").contains(&pid)
+        self.running
+            .lock()
+            .expect("running mutex poisoned")
+            .contains(&pid)
     }
 }
 ```
@@ -1837,9 +1870,27 @@ mod tests {
         let (launcher, _, room) = fixture();
         let err = launcher.launch("nintendo64").unwrap_err();
 
-        assert!(err.to_string().contains("nintendo64"), "error should name the id: {err}");
+        assert!(
+            err.to_string().contains("nintendo64"),
+            "error should name the id: {err}"
+        );
         assert!(kinds(&room).is_empty());
         assert_eq!(launcher.current(), None);
+    }
+
+    #[test]
+    fn launching_an_unknown_app_while_running_leaves_the_running_app_untouched() {
+        let (launcher, _, room) = fixture();
+        launcher.launch("kodi").unwrap();
+
+        let err = launcher.launch("nintendo64").unwrap_err();
+
+        assert!(
+            err.to_string().contains("nintendo64"),
+            "error should name the id: {err}"
+        );
+        assert_eq!(launcher.current(), Some("kodi".to_string()));
+        assert_eq!(kinds(&room), vec![kind::APP_LAUNCHED.to_string()]);
     }
 
     #[test]
@@ -1880,6 +1931,28 @@ mod tests {
 
         assert!(kinds(&room).is_empty());
         assert_eq!(launcher.current(), None);
+    }
+
+    #[test]
+    fn quitting_when_kill_fails_leaves_state_and_the_log_untouched() {
+        let (launcher, platform, room) = fixture();
+        launcher.launch("kodi").unwrap();
+
+        platform.fail_next_kill();
+        let err = launcher.quit().unwrap_err();
+
+        assert!(err.to_string().contains("simulated kill failure"));
+        assert_eq!(
+            launcher.current(),
+            Some("kodi".to_string()),
+            "a failed kill must not make the Launcher forget the app it \
+             couldn't actually stop"
+        );
+        assert_eq!(
+            kinds(&room),
+            vec![kind::APP_LAUNCHED.to_string()],
+            "no app.exited should be recorded when the app was never confirmed stopped"
+        );
     }
 
     #[test]
