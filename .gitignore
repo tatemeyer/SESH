@@ -1,0 +1,9 @@
+/target
+/surfaces/node_modules
+/surfaces/dist
+*.db
+*.db-wal
+*.db-shm
+# subagent-driven-development scratch workspace (briefs, reports, review packages).
+# Deleted when the plan completes; the git history is the record.
+/.superpowers

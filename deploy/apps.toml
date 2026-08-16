@@ -1,0 +1,30 @@
+# What SESH can launch. `command` must be on PATH inside the compositor
+# session. Verify each with `which <command>` on the Pi before trusting it.
+
+[[app]]
+id = "kodi"
+name = "Kodi"
+command = "kodi"
+args = ["--standalone"]
+icon = "movie"
+
+[[app]]
+id = "retroarch"
+name = "RetroArch"
+command = "retroarch"
+args = ["--fullscreen"]
+icon = "gamepad"
+
+# Replace GAMING-PC with the hostname or LAN IP of the machine running
+# Sunshine, and Desktop with the app name Sunshine exposes.
+#
+# The binary is `moonlight-qt`, not `moonlight` — that is what the Debian and
+# Flatpak packages install. It is not in the Raspberry Pi OS repositories, so
+# `install.sh` may fail to find it; see deploy/README.md. Confirm with
+# `which moonlight-qt` before trusting this entry.
+[[app]]
+id = "moonlight"
+name = "Moonlight"
+command = "moonlight-qt"
+args = ["stream", "GAMING-PC", "Desktop"]
+icon = "display"

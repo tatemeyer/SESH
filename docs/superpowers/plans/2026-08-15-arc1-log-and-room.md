@@ -14,15 +14,23 @@
 
 Every task's requirements implicitly include this section.
 
-- **Rust edition 2021**, toolchain 1.75 or newer.
-- **Pinned crate versions** (use exactly these majors/minors): `axum = "0.7"`, `tokio = { version = "1", features = ["full"] }`, `rusqlite = { version = "0.31", features = ["bundled"] }`, `serde = { version = "1", features = ["derive"] }`, `serde_json = "1"`, `toml = "0.8"`, `anyhow = "1"`, `tower-http = { version = "0.5", features = ["fs"] }`, `clap = { version = "4", features = ["derive"] }`, `tracing = "0.1"`, `tracing-subscriber = "0.3"`. Dev-dependencies: `tokio-tungstenite = "0.21"`, `futures-util = "0.3"`, `tempfile = "3"`.
+- **Rust edition 2021**, toolchain 1.82 or newer. (Raised from an
+  originally arbitrary 1.75 floor: `Cargo.lock` is committed in v4
+  format, which requires Cargo 1.78+; 1.82 is the floor actually
+  verified against.)
+- **Pinned crate versions** (use exactly these majors/minors): `axum = "0.7"`, `tokio = { version = "1", features = ["full"] }`, `rusqlite = { version = "0.31", features = ["bundled"] }`, `serde = { version = "1", features = ["derive"] }`, `serde_json = "1"`, `toml = "0.8"`, `anyhow = "1"`, `tower-http = { version = "0.5", features = ["fs"] }`, `clap = { version = "4", features = ["derive"] }`, `tracing = "0.1"`, `tracing-subscriber = { version = "0.3", features = ["env-filter"] }` (the `env-filter` feature is required by `main.rs`'s `tracing_subscriber::EnvFilter` usage and by `RUST_LOG` in `deploy/seshd.service` — do not strip it as unused). Dev-dependencies: `tokio-tungstenite = "0.21"`, `futures-util = "0.3"`, `tempfile = "3"`.
 - **axum 0.7 path syntax is `:id`**, not `{id}`. Do not use axum 0.8 syntax.
 - `rusqlite`'s `bundled` feature is mandatory — the Pi must not need a system SQLite.
 - **The `events` table is append-only.** No `UPDATE` or `DELETE` statement may ever target it, in code or in migrations. There is no API to modify or remove an event.
 - **All derived state must be rebuildable from the event log alone.** A projection may cache, but must never be the only copy of a fact.
 - **Development happens on Windows; the deploy target is `aarch64-unknown-linux-gnu`.** Every `cargo test` must pass on Windows. Any code that cannot (process spawning, compositor, systemd) goes behind a trait with a mock, or lives in `deploy/` and is verified manually.
 - **Per-task gate:** `cargo test`, `cargo clippy --all-targets -- -D warnings`, and `cargo fmt --check` must all be green before the task's commit.
-- **Node 20+**, Vite 5, TypeScript 5, Vitest 1. Surface gate: `npm run build` and `npm test` green.
+- **Node 20+**, Vite 5, TypeScript 5, Vitest 1. Surface gate is per-task, not
+  uniform across the surface Arc: Task 11's `index.html` deliberately points
+  at `/src/main.ts`, which is not created until Task 12, so `vite build`
+  cannot resolve until then — Task 11's gate is `npx tsc --noEmit` and
+  `npm test` only. From Task 12 onward, once `src/main.ts` exists, the full
+  `npm run build` (which wraps both) is the gate.
 - **Soft ceiling of 300 lines per file.** Split by responsibility when crossed.
 - `seshd` binds `0.0.0.0:7373`. No authentication in Arc 1 — the token model arrives in Arc 3.
 - Commit messages use Conventional Commits: `type(scope): description`.
@@ -114,7 +122,7 @@ tokio = { version = "1", features = ["full"] }
 toml = "0.8"
 tower-http = { version = "0.5", features = ["fs"] }
 tracing = "0.1"
-tracing-subscriber = "0.3"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
 futures-util = "0.3"
@@ -887,6 +895,76 @@ mod tests {
         let reopened = Room::new(Store::open(&path).unwrap()).unwrap();
         assert_eq!(reopened.roster(), vec!["sam".to_string()]);
     }
+
+    // The two tests below assert the invariant `Room::write` exists to hold.
+    // They are invariant guards, not a reproduction: the unsynchronised window
+    // between `Store::append` releasing the connection lock and `roster.apply`
+    // is a few instructions wide, and removing the guard does not make either
+    // test fail on demand. What enforces the property is the guard itself.
+    fn record_concurrently(
+        room: &Arc<Room>,
+        threads: usize,
+        each: impl Fn(&Room, usize) + Copy + Send + 'static,
+    ) {
+        let handles: Vec<_> = (0..threads)
+            .map(|t| {
+                let room = room.clone();
+                std::thread::spawn(move || each(&room, t))
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn concurrent_records_reach_subscribers_in_log_order() {
+        let room = room();
+        let mut rx = room.subscribe();
+
+        record_concurrently(&room, 8, |room, t| {
+            for i in 0..8 {
+                room.record(NewEvent::new(format!("k{t}-{i}"))).unwrap();
+            }
+        });
+
+        let mut ids = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            ids.push(event.id);
+        }
+
+        assert_eq!(ids.len(), 64, "every record must reach the subscriber");
+        let mut in_order = ids.clone();
+        in_order.sort_unstable();
+        assert_eq!(
+            ids, in_order,
+            "the bus must publish in the order the log assigned ids"
+        );
+    }
+
+    #[test]
+    fn concurrent_records_leave_the_roster_equal_to_a_rebuild() {
+        let room = room();
+
+        // Two writers toggling the *same* actor is the Arc 3 BLE-watcher
+        // case: whichever order the log lands in, the cached roster has to
+        // agree with a rebuild over that log.
+        record_concurrently(&room, 4, |room, _| {
+            for _ in 0..20 {
+                room.record(NewEvent::new(kind::PRESENCE_ARRIVED).actor("tate"))
+                    .unwrap();
+                room.record(NewEvent::new(kind::PRESENCE_LEFT).actor("tate"))
+                    .unwrap();
+            }
+        });
+
+        let rebuilt = Roster::rebuild(&room.events_since(0, -1).unwrap());
+        assert_eq!(
+            room.roster(),
+            rebuilt.present(),
+            "the live projection must equal a rebuild from the log"
+        );
+    }
 }
 ```
 
@@ -900,8 +978,9 @@ Expected: FAIL — `cannot find type Room`.
 Insert into `crates/seshd/src/room.rs`, between the `use` block and the test module:
 
 ```rust
-/// Broadcast backlog. A subscriber that falls this far behind is lagged,
-/// and reconnects with `GET /api/events?after=<last_id>` to catch up.
+/// Broadcast backlog. A subscriber that falls this far behind is lagged.
+/// Surfaces are level-triggered: a lagged or dropped client reconnects and
+/// re-fetches current state rather than replaying the events it missed.
 const EVENT_CHANNEL_CAPACITY: usize = 256;
 
 /// The live room: the event log plus every view derived from it.
@@ -909,6 +988,7 @@ pub struct Room {
     store: Store,
     events_tx: broadcast::Sender<Event>,
     roster: Mutex<Roster>,
+    write: Mutex<()>,
 }
 
 impl Room {
@@ -922,11 +1002,21 @@ impl Room {
             store,
             events_tx,
             roster: Mutex::new(roster),
+            write: Mutex::new(()),
         }))
     }
 
     /// Append an event, update projections, and fan it out. The only write path.
     pub fn record(&self, new: NewEvent) -> Result<Event> {
+        // `Store::append` takes and drops the connection lock internally, so
+        // without this guard two writers could append, then apply and publish
+        // in the opposite order — breaking the one property the whole design
+        // exists for: the live projection equals a rebuild from the log.
+        //
+        // Lock order is Launcher::current -> Room::write -> Store::conn ->
+        // Room::roster, never reversed. `record` is synchronous, so no guard
+        // is ever held across an `.await`.
+        let _write = self.write.lock().expect("write mutex poisoned");
         let event = self.store.append(new)?;
         self.roster
             .lock()
@@ -966,7 +1056,7 @@ pub mod room;
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `cargo test -p seshd room`
-Expected: PASS — 4 tests.
+Expected: PASS — 6 tests.
 
 - [ ] **Step 5: Run the gate**
 
@@ -1077,12 +1167,77 @@ mod tests {
 
         platform.kill(pid).unwrap();
         assert!(!platform.is_running(pid));
+
+        // Nothing here distinguishes SIGTERM-then-exit from SIGKILL: on
+        // Windows `terminate` really is just `child.kill()`, and on Unix the
+        // signal a reaped child received is not recoverable through `Child`.
+        // The graceful path is covered by the `#[cfg(unix)]` test below.
+        //
+        // `is_running` only consults this platform's own bookkeeping, so it
+        // can't tell "actually killed" from "bookkeeping merely dropped."
+        // On the deploy target (Linux) we can check OS truth directly via
+        // /proc, with no new dependency and no subprocess: once `wait()`
+        // reaps a process, its /proc/<pid> entry disappears. This doesn't
+        // run on the Windows dev machine, since Windows has no /proc.
+        #[cfg(unix)]
+        assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+    }
+
+    #[test]
+    fn killing_a_child_that_already_exited_is_still_ok_and_fast() {
+        let platform = ProcessPlatform::new();
+
+        #[cfg(windows)]
+        let (program, args) = ("cmd", vec!["/c".to_string(), "exit".to_string()]);
+        #[cfg(unix)]
+        let (program, args) = ("true", vec![]);
+
+        let pid = platform.spawn(program, &args).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+
+        // The "user quit the app from inside it" case. The graceful path must
+        // notice the child is already gone rather than burning the full grace
+        // period on a process that cannot answer.
+        let started = std::time::Instant::now();
+        platform.kill(pid).unwrap();
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "killing a dead child should not wait out the grace period"
+        );
+        assert!(!platform.is_running(pid));
+    }
+
+    /// Covers the SIGTERM-first path on the deploy target. RetroArch writes
+    /// SRAM from its SIGTERM handler; SIGKILL would lose it.
+    #[cfg(unix)]
+    #[test]
+    fn kill_lets_a_unix_child_run_its_shutdown_path() {
+        let platform = ProcessPlatform::new();
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("terminated");
+
+        let script = format!(
+            "trap 'touch {}; exit 0' TERM; while true; do sleep 0.05; done",
+            marker.display()
+        );
+        let pid = platform.spawn("sh", &["-c".to_string(), script]).unwrap();
+        // Let the shell install its trap before signalling it.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+
+        platform.kill(pid).unwrap();
+
+        assert!(
+            marker.exists(),
+            "child should have run its SIGTERM handler before dying"
+        );
     }
 
     #[test]
     fn process_platform_errors_on_a_missing_program() {
         let platform = ProcessPlatform::new();
-        assert!(platform.spawn("definitely-not-a-real-program-xyz", &[]).is_err());
+        assert!(platform
+            .spawn("definitely-not-a-real-program-xyz", &[])
+            .is_err());
     }
 }
 ```
@@ -1144,7 +1299,7 @@ impl Platform for ProcessPlatform {
         if let Some(child) = children.get_mut(&pid) {
             // An already-exited child is the normal case when the user quit
             // the app themselves, so a failed kill is not an error.
-            let _ = child.kill();
+            terminate(child, pid);
             let _ = child.wait();
             children.remove(&pid);
         }
@@ -1153,11 +1308,61 @@ impl Platform for ProcessPlatform {
 
     fn is_running(&self, pid: Pid) -> bool {
         let mut children = self.children.lock().expect("children mutex poisoned");
-        match children.get_mut(&pid) {
-            Some(child) => matches!(child.try_wait(), Ok(None)),
-            None => false,
+        let running = matches!(children.get_mut(&pid).map(|c| c.try_wait()), Some(Ok(None)));
+        if !running {
+            // A process that exited on its own (the "quit Kodi from its own
+            // menu" case) never has kill() called on it, so this is the
+            // only place a dead child's entry — and on Windows its open
+            // process HANDLE — ever gets reclaimed.
+            children.remove(&pid);
+        }
+        running
+    }
+}
+
+/// How long a child gets to shut itself down after SIGTERM.
+#[cfg(unix)]
+const GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// How often the grace period checks whether the child has gone.
+#[cfg(unix)]
+const GRACE_POLL: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// Ask a child to exit cleanly, falling back to SIGKILL after `GRACE`.
+///
+/// `Child::kill` is SIGKILL with no SIGTERM first, which skips the app's
+/// shutdown path entirely: RetroArch never writes SRAM and Kodi never saves
+/// playback position, so pressing B mid-game loses the save. Shelling out to
+/// `kill(1)` is deliberate — `libc` would be a whole new dependency for one
+/// syscall, and `kill` is present on every Linux the Pi image ships. Do not
+/// "simplify" this back to `child.kill()`.
+#[cfg(unix)]
+fn terminate(child: &mut Child, pid: Pid) {
+    let sent = Command::new("kill")
+        .args(["-TERM", &pid.to_string()])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok();
+
+    if sent {
+        let deadline = std::time::Instant::now() + GRACE;
+        while std::time::Instant::now() < deadline {
+            match child.try_wait() {
+                Ok(Some(_)) => return,
+                Ok(None) => std::thread::sleep(GRACE_POLL),
+                Err(_) => break,
+            }
         }
     }
+    let _ = child.kill();
+}
+
+/// Windows has no SIGTERM, and it is the dev machine rather than the deploy
+/// target, so it keeps the abrupt kill.
+#[cfg(not(unix))]
+fn terminate(child: &mut Child, _pid: Pid) {
+    let _ = child.kill();
 }
 
 /// An in-memory platform for tests. Records every spawn and lets a test
@@ -1167,6 +1372,7 @@ pub struct MockPlatform {
     next_pid: Mutex<Pid>,
     running: Mutex<HashSet<Pid>>,
     spawned: Mutex<Vec<(String, Vec<String>)>>,
+    fail_next_kill: Mutex<bool>,
 }
 
 impl MockPlatform {
@@ -1180,9 +1386,36 @@ impl MockPlatform {
         self.spawned.lock().expect("spawned mutex poisoned").clone()
     }
 
+    /// Every pid still alive, ascending. Lets a test check that SESH left
+    /// nothing running behind its own back.
+    pub fn running_pids(&self) -> Vec<Pid> {
+        let mut pids: Vec<Pid> = self
+            .running
+            .lock()
+            .expect("running mutex poisoned")
+            .iter()
+            .copied()
+            .collect();
+        pids.sort_unstable();
+        pids
+    }
+
     /// Mark a process as having exited on its own, without SESH killing it.
     pub fn simulate_exit(&self, pid: Pid) {
-        self.running.lock().expect("running mutex poisoned").remove(&pid);
+        self.running
+            .lock()
+            .expect("running mutex poisoned")
+            .remove(&pid);
+    }
+
+    /// Make the next call to `kill` return an error instead of succeeding.
+    /// The flag is one-shot: it resets after the next `kill` call, whether
+    /// or not that call was actually reached.
+    pub fn fail_next_kill(&self) {
+        *self
+            .fail_next_kill
+            .lock()
+            .expect("fail_next_kill mutex poisoned") = true;
     }
 }
 
@@ -1194,7 +1427,10 @@ impl Platform for MockPlatform {
         let mut next = self.next_pid.lock().expect("next_pid mutex poisoned");
         *next += 1;
         let pid = *next;
-        self.running.lock().expect("running mutex poisoned").insert(pid);
+        self.running
+            .lock()
+            .expect("running mutex poisoned")
+            .insert(pid);
         self.spawned
             .lock()
             .expect("spawned mutex poisoned")
@@ -1203,12 +1439,28 @@ impl Platform for MockPlatform {
     }
 
     fn kill(&self, pid: Pid) -> Result<()> {
-        self.running.lock().expect("running mutex poisoned").remove(&pid);
+        let mut fail_next = self
+            .fail_next_kill
+            .lock()
+            .expect("fail_next_kill mutex poisoned");
+        if *fail_next {
+            *fail_next = false;
+            return Err(anyhow!("simulated kill failure"));
+        }
+        drop(fail_next);
+
+        self.running
+            .lock()
+            .expect("running mutex poisoned")
+            .remove(&pid);
         Ok(())
     }
 
     fn is_running(&self, pid: Pid) -> bool {
-        self.running.lock().expect("running mutex poisoned").contains(&pid)
+        self.running
+            .lock()
+            .expect("running mutex poisoned")
+            .contains(&pid)
     }
 }
 ```
@@ -1230,7 +1482,7 @@ pub mod launcher;
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `cargo test -p seshd platform`
-Expected: PASS — 7 tests. The two `ProcessPlatform` tests run real processes and pass on both Windows and Linux.
+Expected: PASS — 8 tests (9 on Unix). The `ProcessPlatform` tests run real processes and pass on both Windows and Linux; the graceful-termination test is `#[cfg(unix)]` because Windows has no SIGTERM.
 
 - [ ] **Step 5: Run the gate**
 
@@ -1372,6 +1624,11 @@ command = "kodi"
         let apps = load_apps(&toml).unwrap();
         let ids: Vec<_> = apps.iter().map(|a| a.id.as_str()).collect();
         assert_eq!(ids, vec!["kodi", "retroarch", "moonlight"]);
+
+        // The Debian and Flatpak packages install Moonlight as `moonlight-qt`.
+        // A plain `moonlight` spawns nothing on the Pi.
+        let moonlight = apps.iter().find(|a| a.id == "moonlight").unwrap();
+        assert_eq!(moonlight.command, "moonlight-qt");
     }
 }
 ```
@@ -1405,10 +1662,15 @@ icon = "gamepad"
 
 # Replace GAMING-PC with the hostname or LAN IP of the machine running
 # Sunshine, and Desktop with the app name Sunshine exposes.
+#
+# The binary is `moonlight-qt`, not `moonlight` — that is what the Debian and
+# Flatpak packages install. It is not in the Raspberry Pi OS repositories, so
+# `install.sh` may fail to find it; see deploy/README.md. Confirm with
+# `which moonlight-qt` before trusting this entry.
 [[app]]
 id = "moonlight"
 name = "Moonlight"
-command = "moonlight"
+command = "moonlight-qt"
 args = ["stream", "GAMING-PC", "Desktop"]
 icon = "display"
 ```
@@ -1533,8 +1795,8 @@ mod tests {
     use crate::store::Store;
     use platform::MockPlatform;
 
-    fn fixture() -> (Arc<Launcher>, Arc<MockPlatform>, Arc<Room>) {
-        let apps = vec![
+    fn apps() -> Vec<AppSpec> {
+        vec![
             AppSpec {
                 id: "kodi".into(),
                 name: "Kodi".into(),
@@ -1549,7 +1811,11 @@ mod tests {
                 args: vec![],
                 icon: "gamepad".into(),
             },
-        ];
+        ]
+    }
+
+    fn fixture() -> (Arc<Launcher>, Arc<MockPlatform>, Arc<Room>) {
+        let apps = apps();
         let platform = Arc::new(MockPlatform::new());
         let room = Room::new(Store::open_in_memory().unwrap()).unwrap();
         let launcher = Launcher::new(apps, platform.clone(), room.clone());
@@ -1604,9 +1870,27 @@ mod tests {
         let (launcher, _, room) = fixture();
         let err = launcher.launch("nintendo64").unwrap_err();
 
-        assert!(err.to_string().contains("nintendo64"), "error should name the id: {err}");
+        assert!(
+            err.to_string().contains("nintendo64"),
+            "error should name the id: {err}"
+        );
         assert!(kinds(&room).is_empty());
         assert_eq!(launcher.current(), None);
+    }
+
+    #[test]
+    fn launching_an_unknown_app_while_running_leaves_the_running_app_untouched() {
+        let (launcher, _, room) = fixture();
+        launcher.launch("kodi").unwrap();
+
+        let err = launcher.launch("nintendo64").unwrap_err();
+
+        assert!(
+            err.to_string().contains("nintendo64"),
+            "error should name the id: {err}"
+        );
+        assert_eq!(launcher.current(), Some("kodi".to_string()));
+        assert_eq!(kinds(&room), vec![kind::APP_LAUNCHED.to_string()]);
     }
 
     #[test]
@@ -1650,6 +1934,28 @@ mod tests {
     }
 
     #[test]
+    fn quitting_when_kill_fails_leaves_state_and_the_log_untouched() {
+        let (launcher, platform, room) = fixture();
+        launcher.launch("kodi").unwrap();
+
+        platform.fail_next_kill();
+        let err = launcher.quit().unwrap_err();
+
+        assert!(err.to_string().contains("simulated kill failure"));
+        assert_eq!(
+            launcher.current(),
+            Some("kodi".to_string()),
+            "a failed kill must not make the Launcher forget the app it \
+             couldn't actually stop"
+        );
+        assert_eq!(
+            kinds(&room),
+            vec![kind::APP_LAUNCHED.to_string()],
+            "no app.exited should be recorded when the app was never confirmed stopped"
+        );
+    }
+
+    #[test]
     fn reaping_notices_an_app_the_user_quit_from_inside_itself() {
         let (launcher, platform, room) = fixture();
         launcher.launch("kodi").unwrap();
@@ -1689,6 +1995,55 @@ mod tests {
         let (launcher, _, _) = fixture();
         let ids: Vec<_> = launcher.apps().iter().map(|a| a.id.as_str()).collect();
         assert_eq!(ids, vec!["kodi", "retroarch"]);
+    }
+
+    /// A platform whose spawn is slow enough that two overlapping launches
+    /// would certainly interleave if `launch` released the `current` lock
+    /// partway through.
+    struct SlowSpawn(Arc<MockPlatform>);
+
+    impl Platform for SlowSpawn {
+        fn spawn(&self, program: &str, args: &[String]) -> Result<Pid> {
+            std::thread::sleep(Duration::from_millis(50));
+            self.0.spawn(program, args)
+        }
+        fn kill(&self, pid: Pid) -> Result<()> {
+            self.0.kill(pid)
+        }
+        fn is_running(&self, pid: Pid) -> bool {
+            self.0.is_running(pid)
+        }
+    }
+
+    #[test]
+    fn concurrent_launches_never_orphan_a_process() {
+        let inner = Arc::new(MockPlatform::new());
+        let room = Room::new(Store::open_in_memory().unwrap()).unwrap();
+        let launcher = Launcher::new(apps(), Arc::new(SlowSpawn(inner.clone())), room);
+
+        let handles: Vec<_> = ["kodi", "retroarch"]
+            .into_iter()
+            .map(|id| {
+                let launcher = launcher.clone();
+                std::thread::spawn(move || launcher.launch(id))
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap().unwrap();
+        }
+
+        // Both launches ran, so both spawned — but only one process may still
+        // be alive afterwards, and SESH must be tracking exactly that one.
+        // Before `launch` held the guard end to end, the losing launch's
+        // process stayed alive with nothing pointing at it.
+        assert_eq!(inner.spawned().len(), 2);
+        let alive = inner.running_pids();
+        assert_eq!(alive.len(), 1, "exactly one app may be running: {alive:?}");
+        assert_eq!(
+            launcher.current_pid(),
+            Some(alive[0]),
+            "the surviving process must be the one the launcher tracks"
+        );
     }
 }
 ```
@@ -1745,7 +2100,8 @@ impl Launcher {
             .map(|r| r.app_id.clone())
     }
 
-    /// The pid of the app currently running, if any. Used by tests and the reaper.
+    /// The pid of the app currently running, if any. Used by tests; the
+    /// reaper reads `current` directly.
     pub fn current_pid(&self) -> Option<Pid> {
         self.current
             .lock()
@@ -1763,44 +2119,69 @@ impl Launcher {
             .ok_or_else(|| anyhow!("no such app: {id}"))?
             .clone();
 
-        self.quit()?;
+        // The guard is held across the whole launch — quit, spawn, record,
+        // and the final assignment. Releasing it between the quit and the
+        // assignment let two overlapping launches both see nothing running,
+        // both spawn, and the second overwrite the first's `Running`. That
+        // process was then invisible to `quit` and `reap` alike: it stayed on
+        // screen over SESH until someone SSHed into the Pi.
+        let mut current = self.current.lock().expect("current mutex poisoned");
+        // `std::sync::Mutex` is not reentrant, so this must not be `self.quit()`.
+        self.quit_locked(&mut current)?;
 
         let pid = self.platform.spawn(&spec.command, &spec.args)?;
-        *self.current.lock().expect("current mutex poisoned") = Some(Running {
+        // The log write is the commit point. If it fails, undo the spawn rather
+        // than leaving a running process SESH has no record of and cannot kill.
+        if let Err(error) = self
+            .room
+            .record(NewEvent::new(kind::APP_LAUNCHED).subject(&spec.id))
+        {
+            let _ = self.platform.kill(pid);
+            return Err(error);
+        }
+        *current = Some(Running {
             app_id: spec.id.clone(),
             pid,
         });
-        self.room
-            .record(NewEvent::new(kind::APP_LAUNCHED).subject(&spec.id))?;
         Ok(())
     }
 
     /// Stop the running app, if any.
     pub fn quit(&self) -> Result<()> {
-        let running = self.current.lock().expect("current mutex poisoned").take();
-        if let Some(running) = running {
-            self.platform.kill(running.pid)?;
-            self.room
-                .record(NewEvent::new(kind::APP_EXITED).subject(&running.app_id))?;
-        }
+        let mut current = self.current.lock().expect("current mutex poisoned");
+        self.quit_locked(&mut current)
+    }
+
+    /// Quit whatever `current` holds. The caller owns the `current` guard, so
+    /// `launch` can quit without releasing it mid-flight.
+    fn quit_locked(&self, current: &mut Option<Running>) -> Result<()> {
+        let Some(running) = current.as_ref() else {
+            return Ok(());
+        };
+        let (pid, app_id) = (running.pid, running.app_id.clone());
+        self.platform.kill(pid)?;
+        self.room
+            .record(NewEvent::new(kind::APP_EXITED).subject(&app_id))?;
+        *current = None;
         Ok(())
     }
 
     /// Notice an app that exited on its own — the user quit it from inside
     /// itself, or it crashed — and record the exit.
     pub fn reap(&self) -> Result<()> {
-        let dead = {
-            let mut current = self.current.lock().expect("current mutex poisoned");
-            match current.as_ref() {
-                Some(running) if !self.platform.is_running(running.pid) => current.take(),
-                _ => None,
-            }
+        let mut current = self.current.lock().expect("current mutex poisoned");
+        let Some(running) = current.as_ref() else {
+            return Ok(());
         };
-
-        if let Some(running) = dead {
-            self.room
-                .record(NewEvent::new(kind::APP_EXITED).subject(&running.app_id))?;
+        if self.platform.is_running(running.pid) {
+            return Ok(());
         }
+        let app_id = running.app_id.clone();
+        // Record before forgetting: if the log write fails, `current` stays set
+        // and the next reap retries, rather than silently losing the exit.
+        self.room
+            .record(NewEvent::new(kind::APP_EXITED).subject(&app_id))?;
+        *current = None;
         Ok(())
     }
 
@@ -1819,7 +2200,7 @@ impl Launcher {
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `cargo test -p seshd launcher`
-Expected: PASS — 11 launcher tests plus the 7 platform tests.
+Expected: PASS — 14 launcher tests plus the 8 platform tests (9 on Unix, where the graceful-termination test also runs).
 
 - [ ] **Step 5: Run the gate**
 
@@ -2312,9 +2693,10 @@ Expected: FAIL — `cannot find function router_with_ws`.
 //! The live event feed.
 //!
 //! Every surface — the TV and, from Arc 3, phones — holds one of these
-//! sockets open and re-renders from it. Clients that fall behind the
-//! broadcast backlog are dropped and expected to reconnect and catch up
-//! via `GET /api/events?after=<last_id>`.
+//! sockets open and re-renders from it. Surfaces are level-triggered: a
+//! client whose socket drops, or that falls behind the broadcast backlog,
+//! reconnects and re-fetches current state (`GET /api/apps`) rather than
+//! replaying the events it missed.
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
@@ -2329,12 +2711,23 @@ pub async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> 
     ws.on_upgrade(move |socket| pump(socket, events))
 }
 
-async fn pump(mut socket: WebSocket, mut events: tokio::sync::broadcast::Receiver<crate::event::Event>) {
+async fn pump(
+    mut socket: WebSocket,
+    mut events: tokio::sync::broadcast::Receiver<crate::event::Event>,
+) {
     loop {
         match events.recv().await {
             Ok(event) => {
-                let Ok(text) = serde_json::to_string(&event) else {
-                    continue;
+                let text = match serde_json::to_string(&event) {
+                    Ok(text) => text,
+                    Err(error) => {
+                        tracing::error!(
+                            %error,
+                            event_id = event.id,
+                            "event failed to serialize; dropping"
+                        );
+                        continue;
+                    }
                 };
                 if socket.send(Message::Text(text)).await.is_err() {
                     return; // client hung up
@@ -2644,6 +3037,10 @@ describe("move", () => {
     expect(move(1, COUNT, COLUMNS, "up")).toBe(1);
   });
 
+  it("stays put when there is no row below", () => {
+    expect(move(3, COUNT, COLUMNS, "down")).toBe(3);
+  });
+
   it("returns 0 for an empty grid", () => {
     expect(move(0, 0, COLUMNS, "right")).toBe(0);
   });
@@ -2703,6 +3100,32 @@ describe("quitApp", () => {
   });
 });
 
+/** Mirrors `RECONNECT_DELAY_MS` in `api.ts`, which is deliberately private. */
+const RECONNECT_DELAY = 1000;
+
+type SocketHandlers = Record<"onopen" | "onmessage" | "onclose" | "onerror", (e?: unknown) => void>;
+
+/**
+ * A WebSocket stand-in that records one handler set per constructed socket,
+ * so a test can drive close/open on each generation independently.
+ */
+function fakeSockets() {
+  const handlers: SocketHandlers[] = [];
+  const FakeWs = vi.fn(function (this: Record<string, unknown>) {
+    const own = {} as SocketHandlers;
+    handlers.push(own);
+    this.close = vi.fn();
+    for (const name of ["onopen", "onmessage", "onclose", "onerror"] as const) {
+      Object.defineProperty(this, name, {
+        set: (fn: (e?: unknown) => void) => {
+          own[name] = fn;
+        },
+      });
+    }
+  });
+  return { FakeWs, handlers };
+}
+
 describe("connectEvents", () => {
   it("parses incoming frames and hands them to the callback", () => {
     let onmessage: ((e: { data: string }) => void) | null = null;
@@ -2724,6 +3147,61 @@ describe("connectEvents", () => {
 
     disconnect();
     expect(close).toHaveBeenCalled();
+  });
+
+  it("reconnects after the socket closes and re-fetches on the new socket", () => {
+    vi.useFakeTimers();
+    const { FakeWs, handlers } = fakeSockets();
+    const onReconnect = vi.fn();
+
+    connectEvents(() => {}, FakeWs as unknown as typeof WebSocket, onReconnect);
+    expect(FakeWs).toHaveBeenCalledTimes(1);
+
+    // seshd restarted: Restart=always drops the socket while Chromium stays up.
+    handlers[0].onclose();
+    vi.advanceTimersByTime(RECONNECT_DELAY);
+    expect(FakeWs).toHaveBeenCalledTimes(2);
+
+    handlers[1].onopen();
+    expect(onReconnect).toHaveBeenCalledTimes(1);
+
+    vi.useRealTimers();
+  });
+
+  it("does not fire onReconnect for the very first connection", () => {
+    const { FakeWs, handlers } = fakeSockets();
+    const onReconnect = vi.fn();
+
+    connectEvents(() => {}, FakeWs as unknown as typeof WebSocket, onReconnect);
+    handlers[0].onopen();
+
+    expect(onReconnect).not.toHaveBeenCalled();
+  });
+
+  it("disconnect cancels a retry that is already pending", () => {
+    vi.useFakeTimers();
+    const { FakeWs, handlers } = fakeSockets();
+
+    const disconnect = connectEvents(() => {}, FakeWs as unknown as typeof WebSocket);
+    handlers[0].onclose();
+    disconnect();
+    vi.advanceTimersByTime(RECONNECT_DELAY * 10);
+
+    expect(FakeWs).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
+  it("stops reconnecting once disconnected", () => {
+    vi.useFakeTimers();
+    const { FakeWs, handlers } = fakeSockets();
+
+    const disconnect = connectEvents(() => {}, FakeWs as unknown as typeof WebSocket);
+    disconnect();
+    handlers[0].onclose();
+    vi.advanceTimersByTime(RECONNECT_DELAY * 10);
+
+    expect(FakeWs).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
   });
 });
 ```
@@ -2824,35 +3302,83 @@ export async function quitApp(fetchFn: typeof fetch = fetch): Promise<void> {
   await ok(await fetchFn("/api/apps/quit", { method: "POST" }));
 }
 
+/** How long to wait before rebuilding a dropped event socket. */
+const RECONNECT_DELAY_MS = 1000;
+
 /**
  * Subscribe to the live event feed. Returns a function that disconnects.
  * The socket URL is derived from the page so this works identically
  * against the Vite dev proxy and against seshd on the Pi.
+ *
+ * The socket reconnects itself: `seshd.service` sets `Restart=always`, so a
+ * crash or an upgrade drops every surface's socket while Chromium stays up.
+ * Without this the TV would show permanently stale state with no symptom.
+ * `onReconnect` fires once each time a *replacement* socket opens — the
+ * surface is level-triggered, so it re-fetches truth rather than replaying
+ * the events it missed.
  */
 export function connectEvents(
   onEvent: (event: SeshEvent) => void,
   WsCtor: typeof WebSocket = WebSocket,
+  onReconnect?: () => void,
 ): () => void {
   const protocol = typeof location !== "undefined" && location.protocol === "https:" ? "wss" : "ws";
   const host = typeof location !== "undefined" ? location.host : "localhost:7373";
-  const socket = new WsCtor(`${protocol}://${host}/ws`);
+  const url = `${protocol}://${host}/ws`;
 
-  socket.onmessage = (message: MessageEvent) => {
-    try {
-      onEvent(JSON.parse(message.data as string) as SeshEvent);
-    } catch {
-      // A frame we cannot parse is not worth tearing the feed down for.
-    }
+  let socket: WebSocket | null = null;
+  let retry: ReturnType<typeof setTimeout> | undefined;
+  let disconnected = false;
+
+  function connect(isReconnect: boolean): void {
+    const sock = new WsCtor(url);
+    socket = sock;
+
+    sock.onopen = () => {
+      if (isReconnect) onReconnect?.();
+    };
+
+    sock.onmessage = (message: MessageEvent) => {
+      try {
+        onEvent(JSON.parse(message.data as string) as SeshEvent);
+      } catch (error) {
+        // A frame we cannot parse is not worth tearing the feed down for, but it
+        // must not vanish silently — on the TV there is no console to inspect.
+        console.error("sesh: unparseable event frame", error, message.data);
+      }
+    };
+
+    // A failed socket fires error then close, so close alone drives the retry.
+    sock.onerror = () => {
+      console.error("sesh: event socket error");
+    };
+
+    sock.onclose = () => {
+      if (disconnected) return;
+      retry = setTimeout(() => connect(true), RECONNECT_DELAY_MS);
+    };
+  }
+
+  connect(false);
+
+  return () => {
+    disconnected = true;
+    if (retry !== undefined) clearTimeout(retry);
+    socket?.close();
   };
-
-  return () => socket.close();
 }
 ```
 
 - [ ] **Step 6: Run the tests to verify they pass**
 
-Run: `cd surfaces && npm test`
-Expected: PASS — 8 nav tests, 6 api tests.
+Run: `cd surfaces && npx tsc --noEmit && npm test`
+Expected: `tsc --noEmit` clean; PASS — 9 nav tests, 10 api tests.
+
+Note: `vite build` (part of the `npm run build` script) is deliberately not
+run in this task. `index.html`'s `<script src="/src/main.ts">` entry point
+doesn't exist yet — it's a Task 12 deliverable — so `vite build` cannot
+succeed until Task 12 creates it. Running the full `npm run build` gate
+starts at Task 12.
 
 - [ ] **Step 7: Commit**
 
@@ -2936,6 +3462,20 @@ describe("renderHome", () => {
     expect(busy.textContent).toContain("Quit");
   });
 
+  it("replaces the hint with a notice when a launch fails", () => {
+    const el = root();
+    renderHome(el, {
+      apps: APPS,
+      current: "kodi",
+      selected: 0,
+      notice: "Could not start moonlight",
+    });
+
+    expect(el.textContent).toContain("Could not start moonlight");
+    expect(el.textContent).not.toContain("Quit");
+    expect(el.querySelector(".hint--error")).not.toBeNull();
+  });
+
   it("shows a message when the registry is empty", () => {
     const el = root();
     renderHome(el, { apps: [], current: null, selected: 0 });
@@ -2992,6 +3532,8 @@ export interface HomeState {
   apps: AppSpec[];
   current: string | null;
   selected: number;
+  /** Replaces the hint line when something went wrong, e.g. a failed launch. */
+  notice?: string | null;
 }
 
 function escapeHtml(value: string): string {
@@ -3026,9 +3568,13 @@ export function renderHome(root: HTMLElement, state: HomeState): void {
     })
     .join("");
 
-  const hint = state.current
-    ? `<p class="hint">${escapeHtml(state.current)} is running — press B or Backspace to Quit</p>`
-    : `<p class="hint">Select an app</p>`;
+  // On the couch there is no console: without this, "that app isn't
+  // installed" and "my button press didn't register" look identical.
+  const hint = state.notice
+    ? `<p class="hint hint--error">${escapeHtml(state.notice)}</p>`
+    : state.current
+      ? `<p class="hint">${escapeHtml(state.current)} is running — press B or Backspace to Quit</p>`
+      : `<p class="hint">Select an app</p>`;
 
   root.innerHTML = `<main class="home"><h1 class="wordmark">SESH</h1><div class="grid">${tiles}</div>${hint}</main>`;
 }
@@ -3050,6 +3596,7 @@ export const COLUMNS = 3;
   --dim: #8a8a99;
   --accent: #7c5cff;
   --running: #2fbf71;
+  --error: #ff6b6b;
 }
 
 * { box-sizing: border-box; }
@@ -3117,6 +3664,7 @@ body {
 .tile__icon[data-icon="display"]::before { content: "\1F5A5"; }
 
 .hint, .empty { color: var(--dim); font-size: 1.4vw; margin: 0; }
+.hint--error { color: var(--error); }
 ```
 
 - [ ] **Step 5: Write the bootstrap and input loop**
@@ -3133,7 +3681,7 @@ import { COLUMNS, renderHome, type HomeState } from "./views/home";
 
 const root = document.getElementById("app")!;
 
-const state: HomeState = { apps: [], current: null, selected: 0 };
+const state: HomeState = { apps: [], current: null, selected: 0, notice: null };
 
 function draw(): void {
   renderHome(root, state);
@@ -3152,9 +3700,24 @@ function navigate(dir: Dir): void {
   draw();
 }
 
+/**
+ * Launch, and put a failure on screen. `void launchApp(...)` alone turned a
+ * missing binary into an unhandled rejection and rendered nothing.
+ */
+async function launch(id: string): Promise<void> {
+  try {
+    await launchApp(id);
+    state.notice = null;
+  } catch (error) {
+    console.error("sesh: launch failed", error);
+    state.notice = `Could not start ${id}`;
+    draw();
+  }
+}
+
 async function activate(): Promise<void> {
   const app = state.apps[state.selected];
-  if (app) await launchApp(app.id);
+  if (app) await launch(app.id);
 }
 
 const KEYS: Record<string, () => void | Promise<void>> = {
@@ -3167,6 +3730,9 @@ const KEYS: Record<string, () => void | Promise<void>> = {
 };
 
 window.addEventListener("keydown", (e) => {
+  // Without this, holding Enter fires `activate` at the OS key-repeat rate,
+  // pushing overlapping launches at seshd for as long as the key is down.
+  if (e.repeat) return;
   const handler = KEYS[e.key];
   if (handler) {
     e.preventDefault();
@@ -3176,7 +3742,7 @@ window.addEventListener("keydown", (e) => {
 
 root.addEventListener("click", (e) => {
   const tile = (e.target as HTMLElement).closest("[data-app-id]");
-  if (tile) void launchApp(tile.getAttribute("data-app-id")!);
+  if (tile) void launch(tile.getAttribute("data-app-id")!);
 });
 
 // Gamepad: the Gamepad API has no event for button presses, so it must be
@@ -3193,7 +3759,10 @@ const GAMEPAD_ACTIONS: Array<[number, () => void | Promise<void>]> = [
 let previous: boolean[] = [];
 
 function pollGamepad(): void {
-  const pad = navigator.getGamepads?.().find((p) => p !== null);
+  // Both `?.`s matter: without the second, a browser lacking getGamepads
+  // throws here and never reaches requestAnimationFrame below, killing the
+  // poll loop for good on a TV whose only input is the controller.
+  const pad = navigator.getGamepads?.()?.find((p) => p !== null);
   if (pad) {
     for (const [button, action] of GAMEPAD_ACTIONS) {
       const pressed = pad.buttons[button]?.pressed ?? false;
@@ -3204,11 +3773,17 @@ function pollGamepad(): void {
   requestAnimationFrame(pollGamepad);
 }
 
-connectEvents((event: SeshEvent) => {
-  if (event.kind === "app.launched" || event.kind === "app.exited") {
-    void refresh();
-  }
-});
+connectEvents(
+  (event: SeshEvent) => {
+    if (event.kind === "app.launched" || event.kind === "app.exited") {
+      void refresh();
+    }
+  },
+  undefined,
+  // A dropped socket means seshd restarted. The surface is level-triggered,
+  // so re-fetch current state rather than replaying the missed events.
+  () => void refresh(),
+);
 
 void refresh();
 requestAnimationFrame(pollGamepad);
@@ -3217,7 +3792,7 @@ requestAnimationFrame(pollGamepad);
 - [ ] **Step 6: Run the tests to verify they pass**
 
 Run: `cd surfaces && npm test`
-Expected: PASS — 8 nav, 6 api, 6 home.
+Expected: PASS — 9 nav, 10 api, 7 home.
 
 - [ ] **Step 7: Verify the build and see it in a browser**
 
@@ -3345,7 +3920,13 @@ SESH_USER="${SESH_USER:-sesh}"
 
 echo "==> Installing packages"
 apt-get update
-apt-get install -y labwc chromium-browser seatd curl kodi retroarch
+# moonlight-qt is not in the Raspberry Pi OS repositories. If this line fails
+# to find it, install Moonlight from the Moonlight project's own repository
+# for Raspberry Pi OS, then re-run this script. Either way, verify with
+#     which moonlight-qt
+# before rebooting — deploy/apps.toml launches that exact binary name, and a
+# missing one shows up on the TV only as an app that refuses to start.
+apt-get install -y labwc chromium-browser seatd curl kodi retroarch moonlight-qt
 
 echo "==> Creating user ${SESH_USER}"
 id -u "$SESH_USER" >/dev/null 2>&1 || useradd -m -G video,input,render,audio "$SESH_USER"
@@ -3410,8 +3991,17 @@ Copy the repo to the Pi, then:
 ```bash
 sudo sh deploy/install.sh
 sudo nano /etc/sesh/apps.toml   # set the Moonlight host
+which moonlight-qt              # must print a path before you reboot
 sudo reboot
 ```
+
+`moonlight-qt` is the binary name the Debian and Flatpak packages install,
+and it is what `apps.toml` launches. It is **not** in the Raspberry Pi OS
+repositories, so `install.sh`'s `apt-get install` line may not find it. If it
+does not, install Moonlight from the Moonlight project's own repository for
+Raspberry Pi OS and re-run `which moonlight-qt` before rebooting. Arc 1's
+Definition of Done requires Moonlight to launch and return, so an unresolved
+`which` here means the deployment is not done.
 
 ## What should happen
 
