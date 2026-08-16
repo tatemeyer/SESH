@@ -25,7 +25,12 @@ Every task's requirements implicitly include this section.
 - **All derived state must be rebuildable from the event log alone.** A projection may cache, but must never be the only copy of a fact.
 - **Development happens on Windows; the deploy target is `aarch64-unknown-linux-gnu`.** Every `cargo test` must pass on Windows. Any code that cannot (process spawning, compositor, systemd) goes behind a trait with a mock, or lives in `deploy/` and is verified manually.
 - **Per-task gate:** `cargo test`, `cargo clippy --all-targets -- -D warnings`, and `cargo fmt --check` must all be green before the task's commit.
-- **Node 20+**, Vite 5, TypeScript 5, Vitest 1. Surface gate: `npm run build` and `npm test` green.
+- **Node 20+**, Vite 5, TypeScript 5, Vitest 1. Surface gate is per-task, not
+  uniform across the surface Arc: Task 11's `index.html` deliberately points
+  at `/src/main.ts`, which is not created until Task 12, so `vite build`
+  cannot resolve until then — Task 11's gate is `npx tsc --noEmit` and
+  `npm test` only. From Task 12 onward, once `src/main.ts` exists, the full
+  `npm run build` (which wraps both) is the gate.
 - **Soft ceiling of 300 lines per file.** Split by responsibility when crossed.
 - `seshd` binds `0.0.0.0:7373`. No authentication in Arc 1 — the token model arrives in Arc 3.
 - Commit messages use Conventional Commits: `type(scope): description`.
@@ -2881,8 +2886,14 @@ export function connectEvents(
 
 - [ ] **Step 6: Run the tests to verify they pass**
 
-Run: `cd surfaces && npm test`
-Expected: PASS — 8 nav tests, 6 api tests.
+Run: `cd surfaces && npx tsc --noEmit && npm test`
+Expected: `tsc --noEmit` clean; PASS — 8 nav tests, 6 api tests.
+
+Note: `vite build` (part of the `npm run build` script) is deliberately not
+run in this task. `index.html`'s `<script src="/src/main.ts">` entry point
+doesn't exist yet — it's a Task 12 deliverable — so `vite build` cannot
+succeed until Task 12 creates it. Running the full `npm run build` gate
+starts at Task 12.
 
 - [ ] **Step 7: Commit**
 
