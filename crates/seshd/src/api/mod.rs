@@ -3,6 +3,7 @@
 
 pub mod apps;
 pub mod events;
+pub mod ws;
 
 use std::sync::Arc;
 
@@ -33,6 +34,15 @@ pub fn router(state: AppState) -> Router {
         .route("/api/apps/:id/launch", post(apps::launch_app))
         .route("/api/apps/quit", post(apps::quit_app))
         .with_state(state)
+}
+
+/// The API router plus the live event feed. `router` alone is kept for
+/// tests that use `oneshot`, which cannot perform a WebSocket upgrade.
+pub fn router_with_ws(state: AppState) -> Router {
+    Router::new()
+        .route("/ws", get(ws::ws_handler))
+        .with_state(state.clone())
+        .merge(router(state))
 }
 
 #[cfg(test)]
