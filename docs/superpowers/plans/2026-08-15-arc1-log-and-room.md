@@ -1774,41 +1774,52 @@ impl Launcher {
         self.quit()?;
 
         let pid = self.platform.spawn(&spec.command, &spec.args)?;
+        // The log write is the commit point. If it fails, undo the spawn rather
+        // than leaving a running process SESH has no record of and cannot kill.
+        if let Err(error) = self
+            .room
+            .record(NewEvent::new(kind::APP_LAUNCHED).subject(&spec.id))
+        {
+            let _ = self.platform.kill(pid);
+            return Err(error);
+        }
         *self.current.lock().expect("current mutex poisoned") = Some(Running {
             app_id: spec.id.clone(),
             pid,
         });
-        self.room
-            .record(NewEvent::new(kind::APP_LAUNCHED).subject(&spec.id))?;
         Ok(())
     }
 
     /// Stop the running app, if any.
     pub fn quit(&self) -> Result<()> {
-        let running = self.current.lock().expect("current mutex poisoned").take();
-        if let Some(running) = running {
-            self.platform.kill(running.pid)?;
-            self.room
-                .record(NewEvent::new(kind::APP_EXITED).subject(&running.app_id))?;
-        }
+        let mut current = self.current.lock().expect("current mutex poisoned");
+        let Some(running) = current.as_ref() else {
+            return Ok(());
+        };
+        let (pid, app_id) = (running.pid, running.app_id.clone());
+        self.platform.kill(pid)?;
+        self.room
+            .record(NewEvent::new(kind::APP_EXITED).subject(&app_id))?;
+        *current = None;
         Ok(())
     }
 
     /// Notice an app that exited on its own — the user quit it from inside
     /// itself, or it crashed — and record the exit.
     pub fn reap(&self) -> Result<()> {
-        let dead = {
-            let mut current = self.current.lock().expect("current mutex poisoned");
-            match current.as_ref() {
-                Some(running) if !self.platform.is_running(running.pid) => current.take(),
-                _ => None,
-            }
+        let mut current = self.current.lock().expect("current mutex poisoned");
+        let Some(running) = current.as_ref() else {
+            return Ok(());
         };
-
-        if let Some(running) = dead {
-            self.room
-                .record(NewEvent::new(kind::APP_EXITED).subject(&running.app_id))?;
+        if self.platform.is_running(running.pid) {
+            return Ok(());
         }
+        let app_id = running.app_id.clone();
+        // Record before forgetting: if the log write fails, `current` stays set
+        // and the next reap retries, rather than silently losing the exit.
+        self.room
+            .record(NewEvent::new(kind::APP_EXITED).subject(&app_id))?;
+        *current = None;
         Ok(())
     }
 

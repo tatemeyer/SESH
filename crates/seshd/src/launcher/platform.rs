@@ -81,6 +81,7 @@ pub struct MockPlatform {
     next_pid: Mutex<Pid>,
     running: Mutex<HashSet<Pid>>,
     spawned: Mutex<Vec<(String, Vec<String>)>>,
+    fail_next_kill: Mutex<bool>,
 }
 
 impl MockPlatform {
@@ -100,6 +101,16 @@ impl MockPlatform {
             .lock()
             .expect("running mutex poisoned")
             .remove(&pid);
+    }
+
+    /// Make the next call to `kill` return an error instead of succeeding.
+    /// The flag is one-shot: it resets after the next `kill` call, whether
+    /// or not that call was actually reached.
+    pub fn fail_next_kill(&self) {
+        *self
+            .fail_next_kill
+            .lock()
+            .expect("fail_next_kill mutex poisoned") = true;
     }
 }
 
@@ -123,6 +134,16 @@ impl Platform for MockPlatform {
     }
 
     fn kill(&self, pid: Pid) -> Result<()> {
+        let mut fail_next = self
+            .fail_next_kill
+            .lock()
+            .expect("fail_next_kill mutex poisoned");
+        if *fail_next {
+            *fail_next = false;
+            return Err(anyhow!("simulated kill failure"));
+        }
+        drop(fail_next);
+
         self.running
             .lock()
             .expect("running mutex poisoned")
