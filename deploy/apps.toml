@@ -1,0 +1,25 @@
+# What SESH can launch. `command` must be on PATH inside the compositor
+# session. Verify each with `which <command>` on the Pi before trusting it.
+
+[[app]]
+id = "kodi"
+name = "Kodi"
+command = "kodi"
+args = ["--standalone"]
+icon = "movie"
+
+[[app]]
+id = "retroarch"
+name = "RetroArch"
+command = "retroarch"
+args = ["--fullscreen"]
+icon = "gamepad"
+
+# Replace GAMING-PC with the hostname or LAN IP of the machine running
+# Sunshine, and Desktop with the app name Sunshine exposes.
+[[app]]
+id = "moonlight"
+name = "Moonlight"
+command = "moonlight"
+args = ["stream", "GAMING-PC", "Desktop"]
+icon = "display"
