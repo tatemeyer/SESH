@@ -1,0 +1,7 @@
+# Authored on Windows, executed on Linux. Without this, a CRLF checkout
+# produces "bad interpreter: /bin/sh^M" on the Pi, which is a baffling
+# failure to debug from the error message alone.
+*.sh        text eol=lf
+*.service   text eol=lf
+*.toml      text eol=lf
+autostart   text eol=lf
