@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<!-- Undecorated, fullscreen, no user-visible window management.
+
+     Launched apps stack over the SESH kiosk; killing one reveals SESH again,
+     which is why the launcher does no focus management of its own. -->
+<labwc_config>
+  <core>
+    <gap>0</gap>
+  </core>
+  <theme>
+    <titlebar>
+      <layout></layout>
+    </titlebar>
+  </theme>
+  <windowRules>
+    <windowRule identifier="*">
+      <serverDecoration>no</serverDecoration>
+    </windowRule>
+  </windowRules>
+</labwc_config>

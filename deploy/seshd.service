@@ -1,0 +1,21 @@
+[Unit]
+Description=SESH room daemon
+# Started by labwc's autostart once the compositor is up, so the environment
+# it inherits already has WAYLAND_DISPLAY. Do not convert this to a system
+# unit: apps seshd spawns would then have no display to appear on.
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/seshd \
+  --db %h/.local/share/sesh/sesh.db \
+  --apps /etc/sesh/apps.toml \
+  --static /usr/local/share/sesh/web \
+  --bind 0.0.0.0:7373
+Restart=always
+RestartSec=2
+Environment=RUST_LOG=seshd=info
+
+[Install]
+WantedBy=graphical-session.target

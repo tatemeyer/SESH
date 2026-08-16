@@ -1,0 +1,39 @@
+#!/bin/sh
+# labwc runs this once the compositor is up.
+#
+# Order matters. seshd is started from inside this session (not as a system
+# service) so that every app it later spawns — Kodi, RetroArch, Moonlight —
+# inherits WAYLAND_DISPLAY and XDG_RUNTIME_DIR and actually appears on the TV.
+
+# Hand this session's Wayland environment to the user systemd manager.
+systemctl --user import-environment WAYLAND_DISPLAY XDG_RUNTIME_DIR
+systemctl --user start seshd.service
+
+# Wait for seshd to accept connections before pointing the browser at it,
+# so the kiosk never lands on a connection-refused page.
+i=0
+while [ "$i" -lt 50 ]; do
+    if curl -sf http://127.0.0.1:7373/api/apps >/dev/null 2>&1; then
+        break
+    fi
+    i=$((i + 1))
+    sleep 0.2
+done
+
+# Package name differs across Raspberry Pi OS releases.
+if command -v chromium-browser >/dev/null 2>&1; then
+    CHROMIUM=chromium-browser
+else
+    CHROMIUM=chromium
+fi
+
+"$CHROMIUM" \
+    --kiosk \
+    --ozone-platform=wayland \
+    --enable-features=UseOzonePlatform \
+    --noerrdialogs \
+    --disable-infobars \
+    --disable-session-crashed-bubble \
+    --check-for-update-interval=31536000 \
+    --autoplay-policy=no-user-gesture-required \
+    http://127.0.0.1:7373 &
