@@ -41,6 +41,9 @@ const KEYS: Record<string, () => void | Promise<void>> = {
 };
 
 window.addEventListener("keydown", (e) => {
+  // Without this, holding Enter fires `activate` at the OS key-repeat rate,
+  // pushing overlapping launches at seshd for as long as the key is down.
+  if (e.repeat) return;
   const handler = KEYS[e.key];
   if (handler) {
     e.preventDefault();

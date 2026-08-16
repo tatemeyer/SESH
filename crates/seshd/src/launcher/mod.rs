@@ -59,7 +59,8 @@ impl Launcher {
             .map(|r| r.app_id.clone())
     }
 
-    /// The pid of the app currently running, if any. Used by tests and the reaper.
+    /// The pid of the app currently running, if any. Used by tests; the
+    /// reaper reads `current` directly.
     pub fn current_pid(&self) -> Option<Pid> {
         self.current
             .lock()
@@ -77,7 +78,15 @@ impl Launcher {
             .ok_or_else(|| anyhow!("no such app: {id}"))?
             .clone();
 
-        self.quit()?;
+        // The guard is held across the whole launch — quit, spawn, record,
+        // and the final assignment. Releasing it between the quit and the
+        // assignment let two overlapping launches both see nothing running,
+        // both spawn, and the second overwrite the first's `Running`. That
+        // process was then invisible to `quit` and `reap` alike: it stayed on
+        // screen over SESH until someone SSHed into the Pi.
+        let mut current = self.current.lock().expect("current mutex poisoned");
+        // `std::sync::Mutex` is not reentrant, so this must not be `self.quit()`.
+        self.quit_locked(&mut current)?;
 
         let pid = self.platform.spawn(&spec.command, &spec.args)?;
         // The log write is the commit point. If it fails, undo the spawn rather
@@ -89,7 +98,7 @@ impl Launcher {
             let _ = self.platform.kill(pid);
             return Err(error);
         }
-        *self.current.lock().expect("current mutex poisoned") = Some(Running {
+        *current = Some(Running {
             app_id: spec.id.clone(),
             pid,
         });
@@ -99,6 +108,12 @@ impl Launcher {
     /// Stop the running app, if any.
     pub fn quit(&self) -> Result<()> {
         let mut current = self.current.lock().expect("current mutex poisoned");
+        self.quit_locked(&mut current)
+    }
+
+    /// Quit whatever `current` holds. The caller owns the `current` guard, so
+    /// `launch` can quit without releasing it mid-flight.
+    fn quit_locked(&self, current: &mut Option<Running>) -> Result<()> {
         let Some(running) = current.as_ref() else {
             return Ok(());
         };
@@ -146,8 +161,8 @@ mod tests {
     use crate::store::Store;
     use platform::MockPlatform;
 
-    fn fixture() -> (Arc<Launcher>, Arc<MockPlatform>, Arc<Room>) {
-        let apps = vec![
+    fn apps() -> Vec<AppSpec> {
+        vec![
             AppSpec {
                 id: "kodi".into(),
                 name: "Kodi".into(),
@@ -162,7 +177,11 @@ mod tests {
                 args: vec![],
                 icon: "gamepad".into(),
             },
-        ];
+        ]
+    }
+
+    fn fixture() -> (Arc<Launcher>, Arc<MockPlatform>, Arc<Room>) {
+        let apps = apps();
         let platform = Arc::new(MockPlatform::new());
         let room = Room::new(Store::open_in_memory().unwrap()).unwrap();
         let launcher = Launcher::new(apps, platform.clone(), room.clone());
@@ -342,5 +361,54 @@ mod tests {
         let (launcher, _, _) = fixture();
         let ids: Vec<_> = launcher.apps().iter().map(|a| a.id.as_str()).collect();
         assert_eq!(ids, vec!["kodi", "retroarch"]);
+    }
+
+    /// A platform whose spawn is slow enough that two overlapping launches
+    /// would certainly interleave if `launch` released the `current` lock
+    /// partway through.
+    struct SlowSpawn(Arc<MockPlatform>);
+
+    impl Platform for SlowSpawn {
+        fn spawn(&self, program: &str, args: &[String]) -> Result<Pid> {
+            std::thread::sleep(Duration::from_millis(50));
+            self.0.spawn(program, args)
+        }
+        fn kill(&self, pid: Pid) -> Result<()> {
+            self.0.kill(pid)
+        }
+        fn is_running(&self, pid: Pid) -> bool {
+            self.0.is_running(pid)
+        }
+    }
+
+    #[test]
+    fn concurrent_launches_never_orphan_a_process() {
+        let inner = Arc::new(MockPlatform::new());
+        let room = Room::new(Store::open_in_memory().unwrap()).unwrap();
+        let launcher = Launcher::new(apps(), Arc::new(SlowSpawn(inner.clone())), room);
+
+        let handles: Vec<_> = ["kodi", "retroarch"]
+            .into_iter()
+            .map(|id| {
+                let launcher = launcher.clone();
+                std::thread::spawn(move || launcher.launch(id))
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap().unwrap();
+        }
+
+        // Both launches ran, so both spawned — but only one process may still
+        // be alive afterwards, and SESH must be tracking exactly that one.
+        // Before `launch` held the guard end to end, the losing launch's
+        // process stayed alive with nothing pointing at it.
+        assert_eq!(inner.spawned().len(), 2);
+        let alive = inner.running_pids();
+        assert_eq!(alive.len(), 1, "exactly one app may be running: {alive:?}");
+        assert_eq!(
+            launcher.current_pid(),
+            Some(alive[0]),
+            "the surviving process must be the one the launcher tracks"
+        );
     }
 }

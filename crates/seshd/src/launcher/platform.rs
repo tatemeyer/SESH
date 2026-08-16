@@ -95,6 +95,20 @@ impl MockPlatform {
         self.spawned.lock().expect("spawned mutex poisoned").clone()
     }
 
+    /// Every pid still alive, ascending. Lets a test check that SESH left
+    /// nothing running behind its own back.
+    pub fn running_pids(&self) -> Vec<Pid> {
+        let mut pids: Vec<Pid> = self
+            .running
+            .lock()
+            .expect("running mutex poisoned")
+            .iter()
+            .copied()
+            .collect();
+        pids.sort_unstable();
+        pids
+    }
+
     /// Mark a process as having exited on its own, without SESH killing it.
     pub fn simulate_exit(&self, pid: Pid) {
         self.running
