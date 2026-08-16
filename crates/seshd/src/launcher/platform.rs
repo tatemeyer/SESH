@@ -53,7 +53,7 @@ impl Platform for ProcessPlatform {
         if let Some(child) = children.get_mut(&pid) {
             // An already-exited child is the normal case when the user quit
             // the app themselves, so a failed kill is not an error.
-            let _ = child.kill();
+            terminate(child, pid);
             let _ = child.wait();
             children.remove(&pid);
         }
@@ -72,6 +72,51 @@ impl Platform for ProcessPlatform {
         }
         running
     }
+}
+
+/// How long a child gets to shut itself down after SIGTERM.
+#[cfg(unix)]
+const GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// How often the grace period checks whether the child has gone.
+#[cfg(unix)]
+const GRACE_POLL: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// Ask a child to exit cleanly, falling back to SIGKILL after `GRACE`.
+///
+/// `Child::kill` is SIGKILL with no SIGTERM first, which skips the app's
+/// shutdown path entirely: RetroArch never writes SRAM and Kodi never saves
+/// playback position, so pressing B mid-game loses the save. Shelling out to
+/// `kill(1)` is deliberate — `libc` would be a whole new dependency for one
+/// syscall, and `kill` is present on every Linux the Pi image ships. Do not
+/// "simplify" this back to `child.kill()`.
+#[cfg(unix)]
+fn terminate(child: &mut Child, pid: Pid) {
+    let sent = Command::new("kill")
+        .args(["-TERM", &pid.to_string()])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok();
+
+    if sent {
+        let deadline = std::time::Instant::now() + GRACE;
+        while std::time::Instant::now() < deadline {
+            match child.try_wait() {
+                Ok(Some(_)) => return,
+                Ok(None) => std::thread::sleep(GRACE_POLL),
+                Err(_) => break,
+            }
+        }
+    }
+    let _ = child.kill();
+}
+
+/// Windows has no SIGTERM, and it is the dev machine rather than the deploy
+/// target, so it keeps the abrupt kill.
+#[cfg(not(unix))]
+fn terminate(child: &mut Child, _pid: Pid) {
+    let _ = child.kill();
 }
 
 /// An in-memory platform for tests. Records every spawn and lets a test
@@ -241,6 +286,11 @@ mod tests {
         platform.kill(pid).unwrap();
         assert!(!platform.is_running(pid));
 
+        // Nothing here distinguishes SIGTERM-then-exit from SIGKILL: on
+        // Windows `terminate` really is just `child.kill()`, and on Unix the
+        // signal a reaped child received is not recoverable through `Child`.
+        // The graceful path is covered by the `#[cfg(unix)]` test below.
+        //
         // `is_running` only consults this platform's own bookkeeping, so it
         // can't tell "actually killed" from "bookkeeping merely dropped."
         // On the deploy target (Linux) we can check OS truth directly via
@@ -249,6 +299,55 @@ mod tests {
         // run on the Windows dev machine, since Windows has no /proc.
         #[cfg(unix)]
         assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+    }
+
+    #[test]
+    fn killing_a_child_that_already_exited_is_still_ok_and_fast() {
+        let platform = ProcessPlatform::new();
+
+        #[cfg(windows)]
+        let (program, args) = ("cmd", vec!["/c".to_string(), "exit".to_string()]);
+        #[cfg(unix)]
+        let (program, args) = ("true", vec![]);
+
+        let pid = platform.spawn(program, &args).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+
+        // The "user quit the app from inside it" case. The graceful path must
+        // notice the child is already gone rather than burning the full grace
+        // period on a process that cannot answer.
+        let started = std::time::Instant::now();
+        platform.kill(pid).unwrap();
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "killing a dead child should not wait out the grace period"
+        );
+        assert!(!platform.is_running(pid));
+    }
+
+    /// Covers the SIGTERM-first path on the deploy target. RetroArch writes
+    /// SRAM from its SIGTERM handler; SIGKILL would lose it.
+    #[cfg(unix)]
+    #[test]
+    fn kill_lets_a_unix_child_run_its_shutdown_path() {
+        let platform = ProcessPlatform::new();
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("terminated");
+
+        let script = format!(
+            "trap 'touch {}; exit 0' TERM; while true; do sleep 0.05; done",
+            marker.display()
+        );
+        let pid = platform.spawn("sh", &["-c".to_string(), script]).unwrap();
+        // Let the shell install its trap before signalling it.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+
+        platform.kill(pid).unwrap();
+
+        assert!(
+            marker.exists(),
+            "child should have run its SIGTERM handler before dying"
+        );
     }
 
     #[test]
