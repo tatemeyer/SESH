@@ -1156,10 +1156,15 @@ impl Platform for ProcessPlatform {
 
     fn is_running(&self, pid: Pid) -> bool {
         let mut children = self.children.lock().expect("children mutex poisoned");
-        match children.get_mut(&pid) {
-            Some(child) => matches!(child.try_wait(), Ok(None)),
-            None => false,
+        let running = matches!(children.get_mut(&pid).map(|c| c.try_wait()), Some(Ok(None)));
+        if !running {
+            // A process that exited on its own (the "quit Kodi from its own
+            // menu" case) never has kill() called on it, so this is the
+            // only place a dead child's entry — and on Windows its open
+            // process HANDLE — ever gets reclaimed.
+            children.remove(&pid);
         }
+        running
     }
 }
 

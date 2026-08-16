@@ -62,10 +62,15 @@ impl Platform for ProcessPlatform {
 
     fn is_running(&self, pid: Pid) -> bool {
         let mut children = self.children.lock().expect("children mutex poisoned");
-        match children.get_mut(&pid) {
-            Some(child) => matches!(child.try_wait(), Ok(None)),
-            None => false,
+        let running = matches!(children.get_mut(&pid).map(|c| c.try_wait()), Some(Ok(None)));
+        if !running {
+            // A process that exited on its own (the "quit Kodi from its own
+            // menu" case) never has kill() called on it, so this is the
+            // only place a dead child's entry — and on Windows its open
+            // process HANDLE — ever gets reclaimed.
+            children.remove(&pid);
         }
+        running
     }
 }
 
@@ -200,6 +205,15 @@ mod tests {
 
         platform.kill(pid).unwrap();
         assert!(!platform.is_running(pid));
+
+        // `is_running` only consults this platform's own bookkeeping, so it
+        // can't tell "actually killed" from "bookkeeping merely dropped."
+        // On the deploy target (Linux) we can check OS truth directly via
+        // /proc, with no new dependency and no subprocess: once `wait()`
+        // reaps a process, its /proc/<pid> entry disappears. This doesn't
+        // run on the Windows dev machine, since Windows has no /proc.
+        #[cfg(unix)]
+        assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
     }
 
     #[test]
