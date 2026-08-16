@@ -6,6 +6,7 @@
   --dim: #8a8a99;
   --accent: #7c5cff;
   --running: #2fbf71;
+  --error: #ff6b6b;
 }
 
 * { box-sizing: border-box; }
@@ -73,3 +74,4 @@ body {
 .tile__icon[data-icon="display"]::before { content: "\1F5A5"; }
 
 .hint, .empty { color: var(--dim); font-size: 1.4vw; margin: 0; }
+.hint--error { color: var(--error); }

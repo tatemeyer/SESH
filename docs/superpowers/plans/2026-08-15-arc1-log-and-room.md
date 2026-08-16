@@ -1591,6 +1591,11 @@ command = "kodi"
         let apps = load_apps(&toml).unwrap();
         let ids: Vec<_> = apps.iter().map(|a| a.id.as_str()).collect();
         assert_eq!(ids, vec!["kodi", "retroarch", "moonlight"]);
+
+        // The Debian and Flatpak packages install Moonlight as `moonlight-qt`.
+        // A plain `moonlight` spawns nothing on the Pi.
+        let moonlight = apps.iter().find(|a| a.id == "moonlight").unwrap();
+        assert_eq!(moonlight.command, "moonlight-qt");
     }
 }
 ```
@@ -1624,10 +1629,15 @@ icon = "gamepad"
 
 # Replace GAMING-PC with the hostname or LAN IP of the machine running
 # Sunshine, and Desktop with the app name Sunshine exposes.
+#
+# The binary is `moonlight-qt`, not `moonlight` — that is what the Debian and
+# Flatpak packages install. It is not in the Raspberry Pi OS repositories, so
+# `install.sh` may fail to find it; see deploy/README.md. Confirm with
+# `which moonlight-qt` before trusting this entry.
 [[app]]
 id = "moonlight"
 name = "Moonlight"
-command = "moonlight"
+command = "moonlight-qt"
 args = ["stream", "GAMING-PC", "Desktop"]
 icon = "display"
 ```
@@ -3379,6 +3389,20 @@ describe("renderHome", () => {
     expect(busy.textContent).toContain("Quit");
   });
 
+  it("replaces the hint with a notice when a launch fails", () => {
+    const el = root();
+    renderHome(el, {
+      apps: APPS,
+      current: "kodi",
+      selected: 0,
+      notice: "Could not start moonlight",
+    });
+
+    expect(el.textContent).toContain("Could not start moonlight");
+    expect(el.textContent).not.toContain("Quit");
+    expect(el.querySelector(".hint--error")).not.toBeNull();
+  });
+
   it("shows a message when the registry is empty", () => {
     const el = root();
     renderHome(el, { apps: [], current: null, selected: 0 });
@@ -3435,6 +3459,8 @@ export interface HomeState {
   apps: AppSpec[];
   current: string | null;
   selected: number;
+  /** Replaces the hint line when something went wrong, e.g. a failed launch. */
+  notice?: string | null;
 }
 
 function escapeHtml(value: string): string {
@@ -3469,9 +3495,13 @@ export function renderHome(root: HTMLElement, state: HomeState): void {
     })
     .join("");
 
-  const hint = state.current
-    ? `<p class="hint">${escapeHtml(state.current)} is running — press B or Backspace to Quit</p>`
-    : `<p class="hint">Select an app</p>`;
+  // On the couch there is no console: without this, "that app isn't
+  // installed" and "my button press didn't register" look identical.
+  const hint = state.notice
+    ? `<p class="hint hint--error">${escapeHtml(state.notice)}</p>`
+    : state.current
+      ? `<p class="hint">${escapeHtml(state.current)} is running — press B or Backspace to Quit</p>`
+      : `<p class="hint">Select an app</p>`;
 
   root.innerHTML = `<main class="home"><h1 class="wordmark">SESH</h1><div class="grid">${tiles}</div>${hint}</main>`;
 }
@@ -3493,6 +3523,7 @@ export const COLUMNS = 3;
   --dim: #8a8a99;
   --accent: #7c5cff;
   --running: #2fbf71;
+  --error: #ff6b6b;
 }
 
 * { box-sizing: border-box; }
@@ -3560,6 +3591,7 @@ body {
 .tile__icon[data-icon="display"]::before { content: "\1F5A5"; }
 
 .hint, .empty { color: var(--dim); font-size: 1.4vw; margin: 0; }
+.hint--error { color: var(--error); }
 ```
 
 - [ ] **Step 5: Write the bootstrap and input loop**
@@ -3576,7 +3608,7 @@ import { COLUMNS, renderHome, type HomeState } from "./views/home";
 
 const root = document.getElementById("app")!;
 
-const state: HomeState = { apps: [], current: null, selected: 0 };
+const state: HomeState = { apps: [], current: null, selected: 0, notice: null };
 
 function draw(): void {
   renderHome(root, state);
@@ -3595,9 +3627,24 @@ function navigate(dir: Dir): void {
   draw();
 }
 
+/**
+ * Launch, and put a failure on screen. `void launchApp(...)` alone turned a
+ * missing binary into an unhandled rejection and rendered nothing.
+ */
+async function launch(id: string): Promise<void> {
+  try {
+    await launchApp(id);
+    state.notice = null;
+  } catch (error) {
+    console.error("sesh: launch failed", error);
+    state.notice = `Could not start ${id}`;
+    draw();
+  }
+}
+
 async function activate(): Promise<void> {
   const app = state.apps[state.selected];
-  if (app) await launchApp(app.id);
+  if (app) await launch(app.id);
 }
 
 const KEYS: Record<string, () => void | Promise<void>> = {
@@ -3622,7 +3669,7 @@ window.addEventListener("keydown", (e) => {
 
 root.addEventListener("click", (e) => {
   const tile = (e.target as HTMLElement).closest("[data-app-id]");
-  if (tile) void launchApp(tile.getAttribute("data-app-id")!);
+  if (tile) void launch(tile.getAttribute("data-app-id")!);
 });
 
 // Gamepad: the Gamepad API has no event for button presses, so it must be
@@ -3639,7 +3686,10 @@ const GAMEPAD_ACTIONS: Array<[number, () => void | Promise<void>]> = [
 let previous: boolean[] = [];
 
 function pollGamepad(): void {
-  const pad = navigator.getGamepads?.().find((p) => p !== null);
+  // Both `?.`s matter: without the second, a browser lacking getGamepads
+  // throws here and never reaches requestAnimationFrame below, killing the
+  // poll loop for good on a TV whose only input is the controller.
+  const pad = navigator.getGamepads?.()?.find((p) => p !== null);
   if (pad) {
     for (const [button, action] of GAMEPAD_ACTIONS) {
       const pressed = pad.buttons[button]?.pressed ?? false;
@@ -3797,7 +3847,13 @@ SESH_USER="${SESH_USER:-sesh}"
 
 echo "==> Installing packages"
 apt-get update
-apt-get install -y labwc chromium-browser seatd curl kodi retroarch
+# moonlight-qt is not in the Raspberry Pi OS repositories. If this line fails
+# to find it, install Moonlight from the Moonlight project's own repository
+# for Raspberry Pi OS, then re-run this script. Either way, verify with
+#     which moonlight-qt
+# before rebooting — deploy/apps.toml launches that exact binary name, and a
+# missing one shows up on the TV only as an app that refuses to start.
+apt-get install -y labwc chromium-browser seatd curl kodi retroarch moonlight-qt
 
 echo "==> Creating user ${SESH_USER}"
 id -u "$SESH_USER" >/dev/null 2>&1 || useradd -m -G video,input,render,audio "$SESH_USER"
@@ -3862,8 +3918,17 @@ Copy the repo to the Pi, then:
 ```bash
 sudo sh deploy/install.sh
 sudo nano /etc/sesh/apps.toml   # set the Moonlight host
+which moonlight-qt              # must print a path before you reboot
 sudo reboot
 ```
+
+`moonlight-qt` is the binary name the Debian and Flatpak packages install,
+and it is what `apps.toml` launches. It is **not** in the Raspberry Pi OS
+repositories, so `install.sh`'s `apt-get install` line may not find it. If it
+does not, install Moonlight from the Moonlight project's own repository for
+Raspberry Pi OS and re-run `which moonlight-qt` before rebooting. Arc 1's
+Definition of Done requires Moonlight to launch and return, so an unresolved
+`which` here means the deployment is not done.
 
 ## What should happen
 

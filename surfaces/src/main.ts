@@ -7,7 +7,7 @@ import { COLUMNS, renderHome, type HomeState } from "./views/home";
 
 const root = document.getElementById("app")!;
 
-const state: HomeState = { apps: [], current: null, selected: 0 };
+const state: HomeState = { apps: [], current: null, selected: 0, notice: null };
 
 function draw(): void {
   renderHome(root, state);
@@ -26,9 +26,24 @@ function navigate(dir: Dir): void {
   draw();
 }
 
+/**
+ * Launch, and put a failure on screen. `void launchApp(...)` alone turned a
+ * missing binary into an unhandled rejection and rendered nothing.
+ */
+async function launch(id: string): Promise<void> {
+  try {
+    await launchApp(id);
+    state.notice = null;
+  } catch (error) {
+    console.error("sesh: launch failed", error);
+    state.notice = `Could not start ${id}`;
+    draw();
+  }
+}
+
 async function activate(): Promise<void> {
   const app = state.apps[state.selected];
-  if (app) await launchApp(app.id);
+  if (app) await launch(app.id);
 }
 
 const KEYS: Record<string, () => void | Promise<void>> = {
@@ -53,7 +68,7 @@ window.addEventListener("keydown", (e) => {
 
 root.addEventListener("click", (e) => {
   const tile = (e.target as HTMLElement).closest("[data-app-id]");
-  if (tile) void launchApp(tile.getAttribute("data-app-id")!);
+  if (tile) void launch(tile.getAttribute("data-app-id")!);
 });
 
 // Gamepad: the Gamepad API has no event for button presses, so it must be
@@ -70,7 +85,10 @@ const GAMEPAD_ACTIONS: Array<[number, () => void | Promise<void>]> = [
 let previous: boolean[] = [];
 
 function pollGamepad(): void {
-  const pad = navigator.getGamepads?.().find((p) => p !== null);
+  // Both `?.`s matter: without the second, a browser lacking getGamepads
+  // throws here and never reaches requestAnimationFrame below, killing the
+  // poll loop for good on a TV whose only input is the controller.
+  const pad = navigator.getGamepads?.()?.find((p) => p !== null);
   if (pad) {
     for (const [button, action] of GAMEPAD_ACTIONS) {
       const pressed = pad.buttons[button]?.pressed ?? false;

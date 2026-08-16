@@ -49,6 +49,20 @@ describe("renderHome", () => {
     expect(busy.textContent).toContain("Quit");
   });
 
+  it("replaces the hint with a notice when a launch fails", () => {
+    const el = root();
+    renderHome(el, {
+      apps: APPS,
+      current: "kodi",
+      selected: 0,
+      notice: "Could not start moonlight",
+    });
+
+    expect(el.textContent).toContain("Could not start moonlight");
+    expect(el.textContent).not.toContain("Quit");
+    expect(el.querySelector(".hint--error")).not.toBeNull();
+  });
+
   it("shows a message when the registry is empty", () => {
     const el = root();
     renderHome(el, { apps: [], current: null, selected: 0 });

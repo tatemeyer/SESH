@@ -151,5 +151,10 @@ command = "kodi"
         let apps = load_apps(&toml).unwrap();
         let ids: Vec<_> = apps.iter().map(|a| a.id.as_str()).collect();
         assert_eq!(ids, vec!["kodi", "retroarch", "moonlight"]);
+
+        // The Debian and Flatpak packages install Moonlight as `moonlight-qt`.
+        // A plain `moonlight` spawns nothing on the Pi.
+        let moonlight = apps.iter().find(|a| a.id == "moonlight").unwrap();
+        assert_eq!(moonlight.command, "moonlight-qt");
     }
 }

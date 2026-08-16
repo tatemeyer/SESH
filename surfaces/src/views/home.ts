@@ -7,6 +7,8 @@ export interface HomeState {
   apps: AppSpec[];
   current: string | null;
   selected: number;
+  /** Replaces the hint line when something went wrong, e.g. a failed launch. */
+  notice?: string | null;
 }
 
 function escapeHtml(value: string): string {
@@ -41,9 +43,13 @@ export function renderHome(root: HTMLElement, state: HomeState): void {
     })
     .join("");
 
-  const hint = state.current
-    ? `<p class="hint">${escapeHtml(state.current)} is running — press B or Backspace to Quit</p>`
-    : `<p class="hint">Select an app</p>`;
+  // On the couch there is no console: without this, "that app isn't
+  // installed" and "my button press didn't register" look identical.
+  const hint = state.notice
+    ? `<p class="hint hint--error">${escapeHtml(state.notice)}</p>`
+    : state.current
+      ? `<p class="hint">${escapeHtml(state.current)} is running — press B or Backspace to Quit</p>`
+      : `<p class="hint">Select an app</p>`;
 
   root.innerHTML = `<main class="home"><h1 class="wordmark">SESH</h1><div class="grid">${tiles}</div>${hint}</main>`;
 }
