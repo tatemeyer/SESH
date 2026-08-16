@@ -33,7 +33,15 @@ apt-get update
 # apt cannot find it, install it from the Moonlight project's own repository
 # (https://github.com/moonlight-stream/moonlight-qt) and re-run this script.
 # Verify with `which moonlight-qt` before rebooting.
-apt-get install -y labwc seatd curl kodi retroarch || fail "package install failed"
+# fonts-noto-color-emoji: the tile icons in surfaces/src/styles.css are emoji
+#   codepoints (\1F3AC, \1F579, \1F5A5). Pi OS Lite ships no emoji font, so
+#   without this every tile renders an empty tofu box.
+# qt6-wayland: moonlight-qt is Qt6, but Pi OS ships only the Qt5 Wayland
+#   plugin. Without it Moonlight aborts ~600ms after launch under labwc with
+#   "no Qt platform plugin could be initialized" — which looks exactly like a
+#   SESH launcher bug and sends you debugging the wrong thing.
+apt-get install -y labwc seatd curl kodi retroarch \
+    fonts-noto-color-emoji qt6-wayland || fail "package install failed"
 if ! command -v chromium-browser >/dev/null 2>&1 && ! command -v chromium >/dev/null 2>&1; then
     apt-get install -y chromium-browser || apt-get install -y chromium || fail "could not install Chromium"
 fi
