@@ -82,9 +82,9 @@ block from `~/.bash_profile`.
 You can still reach the desktop temporarily without undoing anything —
 switch to another VT with `Ctrl+Alt+F2` and log in there.
 
-**Three non-obvious dependencies.** All three were found on real hardware; each
+**Four non-obvious dependencies.** All four were found on real hardware; each
 fails in a way that does not point at its own cause. `install.sh` and
-`deploy/labwc/autostart` now handle all three, so this is background — read it
+`deploy/labwc/autostart` now handle all four, so this is background — read it
 if you are installing by hand or debugging a partial install.
 
 | Missing | Symptom | Handled by |
@@ -92,12 +92,33 @@ if you are installing by hand or debugging a partial install.
 | `fonts-noto-color-emoji` | Every tile shows an empty tofu box instead of an icon | `install.sh` apt line |
 | `qt6-wayland` | Moonlight dies with SIGABRT ~600ms after launch; looks like a SESH launcher bug | `install.sh` apt line |
 | `--password-store=basic` | A modal *"Unlock Keyring — Authentication required"* dialog covers the kiosk, undismissable from a TV | `labwc/autostart` |
+| `ClassicBondedOnly=false` | The controller pairs and reports **Connected**, but never becomes an input device and the browser never sees it | `install.sh` BlueZ step |
 
 The tile icons are emoji codepoints in `surfaces/src/styles.css`; the font is
 what makes them render. Moonlight is Qt6 while Pi OS ships only the Qt5 Wayland
 plugin, so without `qt6-wayland` it cannot initialize a platform plugin at all.
 The keyring dialog was confirmed on the Desktop image — it may not occur on
 Lite, where gnome-keyring is usually absent, but the flag is harmless there.
+
+The controller one is the nastiest to diagnose, because every user-facing
+indicator says success. BlueZ's input profile defaults to
+`ClassicBondedOnly=true` and refuses HID to any device that is not bonded; a
+DualShock 4 pairs *without* bonding, so it connects, shows as **Connected** in
+`bluetoothctl` and blueman alike, and is then silently rejected at the input
+layer. The only place the truth appears is the daemon log:
+
+```bash
+journalctl -u bluetooth | grep -i "not bonded\|!bonded"
+# profiles/input/device.c:hidp_add_connection()
+#     Rejected connection from !bonded device AA:BB:CC:DD:EE:FF
+```
+
+Confirm the fix worked by checking that the pad became a real input device —
+`bluetoothctl info` still reports `Bonded: no`, and that is expected:
+
+```bash
+grep -A5 'Name="Wireless Controller"' /proc/bus/input/devices   # want a Handlers= line
+```
 
 **Moonlight is not in the Pi OS repositories.** `install.sh` warns rather than
 failing. Install `moonlight-qt` from
