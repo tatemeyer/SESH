@@ -61,6 +61,27 @@ install -Dm644 deploy/labwc/rc.xml "${SESH_HOME}/.config/labwc/rc.xml"
 install -Dm755 deploy/labwc/autostart "${SESH_HOME}/.config/labwc/autostart"
 mkdir -p "${SESH_HOME}/.local/share/sesh"
 
+echo "==> Checking the boot target"
+if systemctl get-default 2>/dev/null | grep -q graphical; then
+    cat <<'EOM'
+
+  This Pi currently boots to the graphical desktop. SESH needs the display
+  to itself — a running display manager fights labwc for the seat, which
+  shows up as a black screen or a flickering handoff with no clear cause.
+
+  Switching the boot target to Console Autologin. To put the desktop back:
+
+      sudo raspi-config nonint do_boot_behaviour B4
+
+EOM
+    if command -v raspi-config >/dev/null 2>&1; then
+        raspi-config nonint do_boot_behaviour B2
+    else
+        systemctl set-default multi-user.target
+        echo "note: raspi-config not found; set the default target to multi-user instead."
+    fi
+fi
+
 echo "==> Starting labwc on login to tty1"
 PROFILE="${SESH_HOME}/.bash_profile"
 if ! grep -q "exec labwc" "$PROFILE" 2>/dev/null; then

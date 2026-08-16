@@ -62,11 +62,25 @@ enables lingering; and sets tty1 to autologin and `exec labwc`.
 
 It installs for whoever ran `sudo` (override with `SESH_USER=<name>`).
 
-**On a Desktop image:** the autologin change means tty1 launches the SESH
-kiosk instead of your desktop. That is the point, but if you want the desktop
-back later, delete
+**On a Desktop image:** the Pi boots into a graphical session managed by a
+display manager, which would fight labwc for the seat — a black screen or a
+flickering handoff with no obvious cause. `install.sh` detects this and
+switches the boot target to Console Autologin
+(`raspi-config nonint do_boot_behaviour B2`), announcing it as it goes. Your
+desktop is not removed, only skipped at boot.
+
+To put the desktop back:
+
+```bash
+sudo raspi-config nonint do_boot_behaviour B4
+```
+
+and, if you also want the SESH kiosk gone, delete
 `/etc/systemd/system/getty@tty1.service.d/autologin.conf` and the `exec labwc`
 block from `~/.bash_profile`.
+
+You can still reach the desktop temporarily without undoing anything —
+switch to another VT with `Ctrl+Alt+F2` and log in there.
 
 **Moonlight is not in the Pi OS repositories.** `install.sh` warns rather than
 failing. Install `moonlight-qt` from
