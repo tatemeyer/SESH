@@ -2348,12 +2348,23 @@ pub async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> 
     ws.on_upgrade(move |socket| pump(socket, events))
 }
 
-async fn pump(mut socket: WebSocket, mut events: tokio::sync::broadcast::Receiver<crate::event::Event>) {
+async fn pump(
+    mut socket: WebSocket,
+    mut events: tokio::sync::broadcast::Receiver<crate::event::Event>,
+) {
     loop {
         match events.recv().await {
             Ok(event) => {
-                let Ok(text) = serde_json::to_string(&event) else {
-                    continue;
+                let text = match serde_json::to_string(&event) {
+                    Ok(text) => text,
+                    Err(error) => {
+                        tracing::error!(
+                            %error,
+                            event_id = event.id,
+                            "event failed to serialize; dropping"
+                        );
+                        continue;
+                    }
                 };
                 if socket.send(Message::Text(text)).await.is_err() {
                     return; // client hung up
