@@ -1,0 +1,75 @@
+/* Ten-foot UI: large type, high contrast, obvious focus. */
+
+:root {
+  --bg: #0b0b0f;
+  --fg: #f2f2f7;
+  --dim: #8a8a99;
+  --accent: #7c5cff;
+  --running: #2fbf71;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 400 1rem/1.4 system-ui, sans-serif;
+  overflow: hidden;
+}
+
+.home {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3vh;
+  padding: 4vw;
+}
+
+.wordmark {
+  margin: 0;
+  font-size: 3vw;
+  letter-spacing: 0.4em;
+  color: var(--dim);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 2vw;
+}
+
+.tile {
+  aspect-ratio: 16 / 10;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1vh;
+  border: 0.4vh solid transparent;
+  border-radius: 1.5vh;
+  background: #16161f;
+  color: inherit;
+  font-size: 2vw;
+  cursor: pointer;
+  transition: transform 120ms ease, border-color 120ms ease;
+}
+
+.tile--selected {
+  border-color: var(--accent);
+  transform: scale(1.05);
+}
+
+.tile--running { box-shadow: inset 0 -0.8vh 0 var(--running); }
+
+.tile__icon::before {
+  content: "\25B6";
+  font-size: 3vw;
+  color: var(--dim);
+}
+.tile__icon[data-icon="movie"]::before { content: "\1F3AC"; }
+.tile__icon[data-icon="gamepad"]::before { content: "\1F579"; }
+.tile__icon[data-icon="display"]::before { content: "\1F5A5"; }
+
+.hint, .empty { color: var(--dim); font-size: 1.4vw; margin: 0; }
