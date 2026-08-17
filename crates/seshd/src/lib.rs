@@ -9,5 +9,6 @@ pub mod event;
 pub mod launcher;
 pub mod projection;
 pub mod projections;
+pub mod reconcile;
 pub mod room;
 pub mod store;
