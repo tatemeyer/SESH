@@ -14,3 +14,4 @@ pub mod projections;
 pub mod reconcile;
 pub mod room;
 pub mod store;
+pub mod veto;
