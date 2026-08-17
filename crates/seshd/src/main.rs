@@ -11,6 +11,8 @@ use seshd::config::{detect_lan_ip, load_apps_file};
 use seshd::join::JoinCodes;
 use seshd::launcher::platform::ProcessPlatform;
 use seshd::launcher::Launcher;
+use seshd::player::auth;
+use seshd::player::spotify::load_config as load_spotify_config;
 use seshd::presence::{self, Presence};
 use seshd::reconcile::close_unfinished_launches;
 use seshd::room::Room;
@@ -43,6 +45,61 @@ struct Args {
     /// several interfaces and the detected one is not the one guests are on.
     #[arg(long)]
     advertise_url: Option<String>,
+
+    /// Spotify credentials for the house account.
+    ///
+    /// `global` so it can be written after the subcommand, which is how
+    /// anyone would type `seshd auth-spotify --spotify-config ...`.
+    #[arg(long, global = true, default_value = "/etc/sesh/spotify.toml")]
+    spotify_config: PathBuf,
+
+    /// Where the Spotify refresh token is kept. Written `0600`.
+    #[arg(long, global = true)]
+    spotify_token: Option<PathBuf>,
+
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+/// Things `seshd` can do instead of running the room.
+#[derive(Debug, clap::Subcommand)]
+enum Command {
+    /// Authorise the house Spotify account. Run once, by hand.
+    AuthSpotify,
+}
+
+impl Args {
+    /// Where the refresh token lives.
+    ///
+    /// Under the user's data directory beside the event log, not in `/etc`:
+    /// it is written by the daemon at runtime when Spotify rotates it, and a
+    /// root-owned file would make that fail at the worst moment.
+    fn spotify_token_path(&self) -> PathBuf {
+        self.spotify_token.clone().unwrap_or_else(|| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+            PathBuf::from(home).join(".local/share/sesh/spotify-token.json")
+        })
+    }
+}
+
+/// Run the Spotify authorisation flow once, from a terminal.
+async fn authorise_spotify(args: &Args) -> Result<()> {
+    let config = load_spotify_config(&args.spotify_config).with_context(|| {
+        format!(
+            "reading {}. Copy deploy/spotify.toml there and fill in the \
+             client id and secret from the Spotify dashboard.",
+            args.spotify_config.display()
+        )
+    })?;
+
+    auth::run_flow(
+        &reqwest::Client::new(),
+        auth::ACCOUNTS,
+        &config.client_id,
+        &config.client_secret,
+        &args.spotify_token_path(),
+    )
+    .await
 }
 
 /// Work out what to put in the join QR.
@@ -82,6 +139,12 @@ async fn main() -> Result<()> {
         .init();
 
     let args = Args::parse();
+
+    // A one-shot subcommand runs *instead of* the room, not alongside it: it
+    // needs a terminal to print a URL to and a human to open it.
+    if let Some(Command::AuthSpotify) = args.command {
+        return authorise_spotify(&args).await;
+    }
 
     let store = Store::open(&args.db).with_context(|| format!("opening {}", args.db.display()))?;
     let room = Room::new(store)?;

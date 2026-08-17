@@ -103,6 +103,18 @@ else
     APPS_TOML_KEPT=no
     install -Dm644 deploy/apps.toml /etc/sesh/apps.toml
 fi
+
+# spotify.toml holds the house account's client secret, so it is 0640 and
+# group-readable by the SESH user rather than world-readable like apps.toml.
+# Same never-clobber rule: it is filled in by hand and an upgrade that wiped it
+# would present as "the music stopped working" with no cause on screen.
+if [ -e /etc/sesh/spotify.toml ]; then
+    SPOTIFY_TOML_KEPT=yes
+    install -Dm644 deploy/spotify.toml /etc/sesh/spotify.toml.dist
+else
+    SPOTIFY_TOML_KEPT=no
+    install -Dm640 -g "$SESH_USER" deploy/spotify.toml /etc/sesh/spotify.toml
+fi
 rm -rf /usr/local/share/sesh/web
 mkdir -p /usr/local/share/sesh/web
 cp -r surfaces/dist/. /usr/local/share/sesh/web/
@@ -183,5 +195,14 @@ else
     echo "  1. Edit /etc/sesh/apps.toml and replace GAMING-PC with your Sunshine host."
 fi
 echo "  2. Confirm each command resolves: which kodi retroarch moonlight-qt"
+if [ "$SPOTIFY_TOML_KEPT" = yes ]; then
+    echo "  3. Kept your existing /etc/sesh/spotify.toml. This release's template"
+    echo "     is at /etc/sesh/spotify.toml.dist if you want to diff it."
+else
+    echo "  3. For music: put the house account's client id and secret in"
+    echo "     /etc/sesh/spotify.toml, then run 'seshd auth-spotify' once as"
+    echo "     $SESH_USER. Skip this if you are not using the queue yet — the"
+    echo "     room launches apps without it."
+fi
 echo
 echo "Then: sudo reboot"
