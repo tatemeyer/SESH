@@ -8,6 +8,7 @@ pub mod apps;
 pub mod auth;
 pub mod events;
 pub mod join;
+pub mod music;
 pub mod ws;
 
 use std::sync::Arc;
@@ -54,6 +55,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/join", post(join::join))
         .route("/api/me", get(join::me))
         .route("/api/heartbeat", post(join::heartbeat))
+        .route("/api/music", get(music::get_music))
+        .route("/api/music/queue", post(music::queue_track))
+        .route("/api/music/veto", post(music::veto_track))
         .with_state(state)
 }
 

@@ -11,6 +11,7 @@ use tokio::sync::broadcast;
 
 use crate::event::{Event, NewEvent};
 use crate::projection::Projection;
+use crate::projections::queue::Queue;
 use crate::projections::roster::Roster;
 use crate::store::{Person, Store};
 
@@ -24,6 +25,7 @@ pub struct Room {
     store: Store,
     events_tx: broadcast::Sender<Event>,
     roster: Mutex<Roster>,
+    queue: Mutex<Queue>,
     write: Mutex<()>,
 }
 
@@ -33,11 +35,15 @@ impl Room {
         let (events_tx, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
         let history = store.read_since(0, -1)?;
         let roster = Roster::rebuild(&history);
+        // The queue rebuilds from the log for free, so it survives a restart —
+        // which Spotify's own queue does not.
+        let queue = Queue::rebuild(&history);
 
         Ok(Arc::new(Self {
             store,
             events_tx,
             roster: Mutex::new(roster),
+            queue: Mutex::new(queue),
             write: Mutex::new(()),
         }))
     }
@@ -50,13 +56,19 @@ impl Room {
         // exists for: the live projection equals a rebuild from the log.
         //
         // Lock order is Launcher::current -> Room::write -> Store::conn ->
-        // Room::roster, never reversed. `record` is synchronous, so no guard
-        // is ever held across an `.await`.
+        // Room::roster -> Room::queue, never reversed. `record` is
+        // synchronous, so no guard is ever held across an `.await`, and the
+        // two projection guards are taken one after the other rather than
+        // nested.
         let _write = self.write.lock().expect("write mutex poisoned");
         let event = self.store.append(new)?;
         self.roster
             .lock()
             .expect("roster mutex poisoned")
+            .apply(&event);
+        self.queue
+            .lock()
+            .expect("queue mutex poisoned")
             .apply(&event);
         // Fails only when there are no subscribers, which is not an error.
         let _ = self.events_tx.send(event.clone());
@@ -71,6 +83,14 @@ impl Room {
     /// Person ids currently in the room.
     pub fn roster(&self) -> Vec<String> {
         self.roster.lock().expect("roster mutex poisoned").present()
+    }
+
+    /// A snapshot of the music queue.
+    ///
+    /// Cloned rather than borrowed so no caller can hold the projection lock
+    /// across an `.await` — a queue this size is a handful of small strings.
+    pub fn queue(&self) -> Queue {
+        self.queue.lock().expect("queue mutex poisoned").clone()
     }
 
     /// Read history. Pass `limit = -1` for no limit.
@@ -144,6 +164,50 @@ mod tests {
         let received = rx.recv().await.unwrap();
 
         assert_eq!(received, written);
+    }
+
+    #[test]
+    fn recording_music_events_updates_the_queue() {
+        let room = room();
+        assert!(room.queue().pending().is_empty());
+
+        let queued = room
+            .record(
+                NewEvent::new(kind::MUSIC_QUEUED)
+                    .actor("sam")
+                    .subject("spotify:track:a")
+                    .payload(serde_json::json!({ "title": "A" })),
+            )
+            .unwrap();
+
+        let queue = room.queue();
+        assert_eq!(queue.pending().len(), 1);
+        assert_eq!(queue.pending()[0].entry, queued.id);
+        assert_eq!(queue.pending()[0].added_by.as_deref(), Some("sam"));
+    }
+
+    // The queue is a projection, so it comes back from the log by itself.
+    // Spotify's own queue does not survive a restart; this is the difference
+    // that justifies SESH holding the authoritative one.
+    #[test]
+    fn the_queue_survives_reopening_the_room() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sesh.db");
+
+        {
+            let room = Room::new(Store::open(&path).unwrap()).unwrap();
+            room.record(
+                NewEvent::new(kind::MUSIC_QUEUED)
+                    .actor("sam")
+                    .subject("spotify:track:a")
+                    .payload(serde_json::json!({ "title": "A" })),
+            )
+            .unwrap();
+        }
+
+        let reopened = Room::new(Store::open(&path).unwrap()).unwrap();
+        assert_eq!(reopened.queue().pending().len(), 1);
+        assert_eq!(reopened.queue().pending()[0].title, "A");
     }
 
     #[test]

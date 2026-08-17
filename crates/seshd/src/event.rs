@@ -87,6 +87,23 @@ pub mod kind {
     pub const APP_EXITED: &str = "app.exited";
     /// Someone scanned the QR and became a person the house knows.
     pub const PERSON_JOINED: &str = "person.joined";
+
+    // Music. `subject` is always the track URI, so "what did we play the night
+    // Marcus came over" reads naturally off the log. *Identity* of a queue
+    // entry is `payload.entry` — the id of the `music.queued` event — because
+    // two people queueing the same song must get two independently vetoable
+    // entries, and on a shared-queue night that is a running joke, not an
+    // edge case.
+
+    /// Someone added a track. The actor is who added it; this event's own id
+    /// becomes the queue entry id every later music event refers to.
+    pub const MUSIC_QUEUED: &str = "music.queued";
+    /// Someone voted to skip a queued or playing track.
+    pub const MUSIC_VETOED: &str = "music.vetoed";
+    /// A track began playing.
+    pub const MUSIC_STARTED: &str = "music.started";
+    /// A track ended or was dropped. `payload.why` says which.
+    pub const MUSIC_SKIPPED: &str = "music.skipped";
 }
 
 #[cfg(test)]
