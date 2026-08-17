@@ -109,8 +109,8 @@ Recorded 2026-08-16, from the first real `sudo sh deploy/install.sh` run.
    only helps a browser that dies *intermittently*. It is no defence against a
    deterministic startup failure, which is what actually took the room down.
 
-4. **A `seshd` restart orphans the running app's exit event.** *(Open — spec
-   written, needs approval.)* `Launcher` holds the launch/exit pairing only in
+4. ~~**A `seshd` restart orphans the running app's exit event.**~~ **Fixed
+   2026-08-17.** `Launcher` held the launch/exit pairing only in
    memory, so restarting the daemon while an app runs leaves an
    `app.launched` that no `app.exited` will ever close. The log is
    append-only, so the gap is permanent. Observed on the Pi: RetroArch
@@ -125,8 +125,14 @@ Recorded 2026-08-16, from the first real `sudo sh deploy/install.sh` run.
    uses the default `KillMode=control-group` and launched apps are children
    inside the unit's cgroup, so **restarting `seshd` kills every app it
    launched.** A dangling launch therefore always means the app is dead; only
-   the exit *time* is unknown. Design in
-   `docs/superpowers/specs/2026-08-16-launch-reconciliation.md`.
+   the exit *time* is unknown.
+   `seshd` now closes such launches at startup, before it binds, appending an
+   `app.exited` marked `exit_observed: false` and carrying both provable time
+   bounds rather than inventing an observation. Design in
+   `docs/superpowers/specs/2026-08-16-launch-reconciliation.md`, implementation
+   in `docs/superpowers/plans/2026-08-17-launch-reconciliation.md` and
+   `crates/seshd/src/reconcile.rs`. The RetroArch row above is closed by
+   event 6 on the live Pi; the log has no unclosed launches.
 
 5. **`install.sh` clobbers a configured `apps.toml`.** *(Open.)*
    Line 92 runs `install -Dm644 deploy/apps.toml /etc/sesh/apps.toml`

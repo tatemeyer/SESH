@@ -162,10 +162,18 @@ One hardware check to confirm the premise rather than trust it: launch an app,
 
 ## Not in scope
 
-- **Repairing tonight's RetroArch row.** It stays. The table is append-only and
-  the discipline is worth more than a tidy log. Reconciliation is
-  forward-looking; if closing the historical row is wanted, it is a deliberate
-  one-off `POST /api/events` and should be argued separately.
+- **Editing tonight's RetroArch row.** It stays exactly as written. The table
+  is append-only and that discipline is worth more than a tidy log.
+
+  *Corrected during implementation (2026-08-17).* An earlier draft of this
+  section also claimed reconciliation would be "forward-looking" and would
+  leave that historical launch open. That was wrong on two counts. There is no
+  anchor in the log for "forward" — no `daemon.started` event exists to scan
+  from — so the restriction would have been arbitrary. And the goal is a
+  self-consistent log; deliberately leaving one row inconsistent forever serves
+  nothing. The first startup after this change therefore closes the RetroArch
+  launch too, by appending a marked `app.exited` like any other. Nothing is
+  edited, so the invariant holds.
 - **Surviving a restart without killing apps.** Keeping Kodi alive across a
   `seshd` restart would mean moving launched apps out of the unit's cgroup
   (`systemd-run --scope`, or `setsid` plus adoption by pid). That is a larger

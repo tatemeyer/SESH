@@ -9,6 +9,7 @@ use seshd::api::{router_with_ws, AppState};
 use seshd::config::load_apps_file;
 use seshd::launcher::platform::ProcessPlatform;
 use seshd::launcher::Launcher;
+use seshd::reconcile::close_unfinished_launches;
 use seshd::room::Room;
 use seshd::store::Store;
 use tower_http::services::{ServeDir, ServeFile};
@@ -47,6 +48,19 @@ async fn main() -> Result<()> {
 
     let store = Store::open(&args.db).with_context(|| format!("opening {}", args.db.display()))?;
     let room = Room::new(store)?;
+
+    // Before anything can read the log, close launches a previous run left
+    // open. Restarting `seshd` kills the apps it launched, so their exits were
+    // never observed and never recorded — leaving a log that claims they are
+    // still running. Do this before binding so no client sees that state.
+    let closed = close_unfinished_launches(&room)?;
+    if !closed.is_empty() {
+        tracing::warn!(
+            apps = ?closed,
+            "closed launches left open by a previous run — the last shutdown was not clean"
+        );
+    }
+
     let apps = load_apps_file(&args.apps)?;
     tracing::info!(count = apps.len(), "loaded app registry");
 
