@@ -239,6 +239,16 @@ feel different, and pure surface work on Arc 1's foundation.
 **Arc 3 — Presence & Phones.** BLE watcher, QR handoff, phone surface, live
 roster, shared music queue, audio routing and the vinyl handoff.
 
+> **Reordered 2026-08-17.** Arcs 2 and 3 have swapped, and Arc 3 has been
+> split. Attract Mode as specified above is driven by the trophy case, which
+> is Arc 4 — with a log of eight events, no actors, and an empty `people`
+> table, it would have been a broadcast screen with nothing to broadcast.
+> The phone half of Arc 3 goes first instead, since it is what starts filling
+> the log with social events. BLE presence and the vinyl handoff stay behind
+> for a later arc; phones give a good-enough roster meanwhile, which is the
+> degraded mode *Failure behavior* already describes.
+> See `2026-08-17-arc2-phones-and-queue.md`.
+
 **Arc 4 — The Record.** Trophy case, resume-night sessions, brackets, house
 rules and timers. All projections plus surfaces, fed by manual reporting from
 Arc 3's phone app.
