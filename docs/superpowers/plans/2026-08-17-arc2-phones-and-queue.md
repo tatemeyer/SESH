@@ -200,14 +200,14 @@ No new dependencies in `surfaces/`.
 
 *No network, no hardware. Ends with: a phone that knows who it is.*
 
-- [ ] **1.1 Split the store, widen the invariant**
+- [x] **1.1 Split the store, widen the invariant**
 
   `store.rs` → `store/mod.rs` (open, pragmas, schema), `store/events.rs`
   (`append`, `read_since`, `last_id`), `store/people.rs`. Pure move, no
   behaviour change — the existing store tests must pass untouched, which is what
   makes it a safe first task. Update the `CLAUDE.md` invariant wording per D10.
 
-- [ ] **1.2 `people` gains `token` and `joined_ms`**
+- [x] **1.2 `people` gains `token` and `joined_ms`**
 
   `ALTER TABLE people ADD COLUMN ...`, guarded so it is idempotent on an
   existing DB (Bookworm's SQLite predates `ADD COLUMN IF NOT EXISTS`; check
@@ -225,7 +225,7 @@ No new dependencies in `surfaces/`.
   it — this is the case that runs on the live Pi); lookup by an unknown token is
   `None`.
 
-- [ ] **1.3 Join codes**
+- [x] **1.3 Join codes**
 
   `crates/seshd/src/join.rs`. In-memory, `Mutex<VecDeque<(code, issued_ms)>>`,
   holding the current code and the previous one so a scan that lands across a
@@ -236,7 +236,7 @@ No new dependencies in `surfaces/`.
   code older than the window is refused; the previous code stays valid until the
   next rotation; an unknown code is refused.
 
-- [ ] **1.4 The join endpoints**
+- [x] **1.4 The join endpoints**
 
   - `GET /api/join/qr.svg` — current code as a QR, `Cache-Control: no-store`
   - `POST /api/join {code, name}` → `201 {id, name, token}`; records
@@ -246,14 +246,14 @@ No new dependencies in `surfaces/`.
   A wrong or reused code is `403`, not `404` — it is a refusal, not a missing
   thing.
 
-- [ ] **1.5 The token extractor**
+- [x] **1.5 The token extractor**
 
   An axum extractor resolving `Authorization: Bearer` → `Person`, rejecting with
   `401`. Applied to the music write endpoints in Phase 2 and **nowhere else**:
   `/api/events` stays open, per the invariant, and the TV surface has no token
   and needs none.
 
-- [ ] **1.6 Heartbeat and presence**
+- [x] **1.6 Heartbeat and presence**
 
   `POST /api/heartbeat` (bearer). A `Presence` tracker holding last-seen per
   person; a tokio task sweeping every 60s. Records `presence.arrived` on a
@@ -267,6 +267,17 @@ No new dependencies in `surfaces/`.
 **Phase 1 done when:** scanning the QR on a phone yields a token, a name, a
 `people` row, a `person.joined` event, and the phone appearing in
 `GET /api/roster`. Verified on the Pi with a real phone camera.
+
+*Amended on delivery (2026-08-17).* That last sentence quietly depended on
+Phase 5, which is where the join screen and the on-TV QR live — there is no
+page for a camera to land on yet. Phase 1 was instead verified on the Pi
+against the real binary with the QR **decoded from the served SVG by
+`zbarimg`**, which is the same bytes a camera would read, and the whole flow
+driven over HTTP: join, refuse the reused code, `/api/me`, heartbeat, and a
+restart. The camera itself moves to Phase 5's verification, where it is a test
+of the screens rather than of this. Recorded rather than quietly reinterpreted.
+
+Verification record: `docs/arc2-phase1-verification.md`.
 
 ## Phase 2 — The queue, as pure logic
 
