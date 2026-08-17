@@ -47,11 +47,14 @@ struct Args {
     advertise_url: Option<String>,
 
     /// Spotify credentials for the house account.
-    #[arg(long, default_value = "/etc/sesh/spotify.toml")]
+    ///
+    /// `global` so it can be written after the subcommand, which is how
+    /// anyone would type `seshd auth-spotify --spotify-config ...`.
+    #[arg(long, global = true, default_value = "/etc/sesh/spotify.toml")]
     spotify_config: PathBuf,
 
     /// Where the Spotify refresh token is kept. Written `0600`.
-    #[arg(long)]
+    #[arg(long, global = true)]
     spotify_token: Option<PathBuf>,
 
     #[command(subcommand)]

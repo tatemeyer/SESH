@@ -169,6 +169,67 @@ async fn serve(nothing_playing: bool) -> (Shared, SpotifyPlayer, tempfile::TempD
     (stub, player, dir)
 }
 
+/// Start just the accounts endpoint and return its base URL.
+async fn serve_accounts(with_refresh: bool) -> String {
+    let stub: Shared = Arc::new(Stub::default());
+    if with_refresh {
+        stub.rotate_refresh.store(1, Ordering::SeqCst);
+    }
+    let app = Router::new()
+        .route("/api/token", post(token))
+        .with_state(stub);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    format!("http://{addr}")
+}
+
+// The one-time flow. If this is wrong nothing else in the arc can start, and
+// the failure lands on a person standing at a terminal with a browser open.
+#[tokio::test]
+async fn exchanging_an_authorisation_code_yields_a_refresh_token() {
+    let accounts = serve_accounts(true).await;
+
+    let (tokens, access) = seshd::player::auth::exchange_code(
+        &reqwest::Client::new(),
+        &accounts,
+        "client",
+        "secret",
+        "the-code",
+        &seshd::player::auth::redirect_uri(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(tokens.refresh_token, "rotated-refresh");
+    assert_eq!(access.expires_in_s, 3600);
+}
+
+// Without a refresh token the room works until the access token expires and
+// then stops, an hour later, for no reason anyone could see. Better to refuse
+// while the person is still standing there.
+#[tokio::test]
+async fn an_exchange_without_a_refresh_token_is_refused_immediately() {
+    let accounts = serve_accounts(false).await;
+
+    let error = seshd::player::auth::exchange_code(
+        &reqwest::Client::new(),
+        &accounts,
+        "client",
+        "secret",
+        "the-code",
+        &seshd::player::auth::redirect_uri(),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+
+    assert!(error.contains("refresh token"), "got {error}");
+}
+
 #[tokio::test]
 async fn playback_is_fetched_and_mapped() {
     let (stub, player, _dir) = serve(false).await;
