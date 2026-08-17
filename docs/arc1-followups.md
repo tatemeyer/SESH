@@ -80,16 +80,36 @@ Recorded 2026-08-16, from the first real `sudo sh deploy/install.sh` run.
    a `. "$HOME/.profile"` fallback when it creates the file, and leaves a
    pre-existing `~/.bash_profile` alone.
 
-2. **Nothing supervises the kiosk browser.** *(Open — highest-value next fix.)*
+2. ~~**The kiosk shared the user's default Chromium profile.**~~ **Fixed.**
+   The first real boot came up black with a live mouse cursor: labwc and
+   `seshd` were both healthy, but Chromium exited 21 before painting. A
+   `SingletonLock` left in `~/.config/chromium` back in January pointed at
+   `raspberrypi-2225` — this Pi's hostname *before* it was renamed `TatePi`.
+   Chromium refuses to open a profile locked by "another computer", and since
+   the lock records a hostname that no longer exists, it can never self-heal.
+   It then tried to report this through a modal dialog, which had no display
+   to appear on. No log anywhere mentioned Chromium; the only symptom was a
+   black screen.
+   **Any Pi renamed after its first desktop Chromium run hits this**, which is
+   the common case — the stock image ships as `raspberrypi`. The kiosk now
+   uses a dedicated profile under `~/.local/share/sesh/chromium` and clears a
+   stale lock when no kiosk is running. Verified by planting the exact
+   `raspberrypi-2225` lock and confirming the kiosk still starts.
+   *Bearing on the entry below:* a restart supervisor would **not** have saved
+   this. Chromium failed instantly and deterministically, so a respawn loop
+   would have spun forever against the same black screen.
+
+3. **Nothing supervises the kiosk browser.** *(Open.)*
    `deploy/labwc/autostart` launches Chromium once with `&`. `seshd` has
    `Restart=always`, but the browser has no equivalent: if it OOMs or crashes,
    the TV shows an empty labwc desktop indefinitely and the only recovery is a
    power cycle. For an always-on room device that is the wrong failure mode.
    The fix is a supervised restart — a user unit with `Restart=always`, or a
-   respawn loop in `autostart`. Deliberately not folded into the first boot
-   verification, so that reboot tests only code paths already exercised.
+   respawn loop in `autostart`. Note the limit established above: supervision
+   only helps a browser that dies *intermittently*. It is no defence against a
+   deterministic startup failure, which is what actually took the room down.
 
-3. **`/etc/sesh/apps.toml` still ships the placeholder Sunshine host.**
+4. **`/etc/sesh/apps.toml` still ships the placeholder Sunshine host.**
    `install.sh` prints a reminder to replace `GAMING-PC`/`Desktop`, but
    nothing enforces it, so the Moonlight tile is installed broken by default.
    Needs the real host before Moonlight can be said to work.
@@ -104,6 +124,11 @@ Recorded 2026-08-16, from the first real `sudo sh deploy/install.sh` run.
   uncheckpointed 57KB WAL lost nothing — the event read back identically
   after restart. This is the durability half of the Definition of Done's
   "survives a reboot"; only the power cycle itself is still unverified.
+- **The Pi boots unattended into the SESH home screen.** tty1 autologin →
+  labwc → `autostart` → `seshd` + kiosk Chromium, with no desktop, no window
+  decoration, and no cursor over the UI. Confirmed by `grim` screenshot at
+  3840x2160: all three tiles render with real emoji icons and the focus ring
+  sits on Kodi.
 - **Controller navigation works** once BlueZ's `ClassicBondedOnly` is relaxed
   (a DualShock 4 pairs without bonding, so the HID profile is refused and no
   `/dev/input` node appears while every UI still reports "Connected").
