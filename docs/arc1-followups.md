@@ -109,10 +109,38 @@ Recorded 2026-08-16, from the first real `sudo sh deploy/install.sh` run.
    only helps a browser that dies *intermittently*. It is no defence against a
    deterministic startup failure, which is what actually took the room down.
 
-4. **`/etc/sesh/apps.toml` still ships the placeholder Sunshine host.**
-   `install.sh` prints a reminder to replace `GAMING-PC`/`Desktop`, but
-   nothing enforces it, so the Moonlight tile is installed broken by default.
-   Needs the real host before Moonlight can be said to work.
+4. **A `seshd` restart orphans the running app's exit event.** *(Open — spec
+   written, needs approval.)* `Launcher` holds the launch/exit pairing only in
+   memory, so restarting the daemon while an app runs leaves an
+   `app.launched` that no `app.exited` will ever close. The log is
+   append-only, so the gap is permanent. Observed on the Pi: RetroArch
+   launched 23:24:22, `seshd` restarted 23:51:44 to reload `apps.toml`, and
+   the log still claims RetroArch is running.
+   This breaks the architecture's load-bearing claim that derived state is
+   rebuildable from the log — rebuild "what is running" from that log and you
+   get RetroArch, forever. It is also routine rather than exceptional: every
+   config reload, every crash under `Restart=always`, and every power cut on
+   an appliance that lives in a living room produces one.
+   Established while diagnosing it, and worth not re-deriving: `seshd.service`
+   uses the default `KillMode=control-group` and launched apps are children
+   inside the unit's cgroup, so **restarting `seshd` kills every app it
+   launched.** A dangling launch therefore always means the app is dead; only
+   the exit *time* is unknown. Design in
+   `docs/superpowers/specs/2026-08-16-launch-reconciliation.md`.
+
+5. **`install.sh` clobbers a configured `apps.toml`.** *(Open.)*
+   Line 92 runs `install -Dm644 deploy/apps.toml /etc/sesh/apps.toml`
+   unconditionally, so re-running the installer silently reverts the Sunshine
+   host to the `GAMING-PC` placeholder. The installer prints a reminder to
+   edit that file, then overwrites the edit on the next run. Presents as
+   Moonlight breaking for no reason.
+
+6. ~~**`/etc/sesh/apps.toml` still ships the placeholder Sunshine host.**~~
+   **Configured on TatePi 2026-08-16.** The repo template still ships
+   `GAMING-PC`/`Desktop`, which is correct for a template, so the Moonlight
+   tile is still installed non-working by default on a fresh Pi and
+   `install.sh` only prints a reminder. Follow-up 5 above is the sharper edge
+   of the same problem.
 
 ## Verified on hardware, so treat as settled
 
@@ -129,6 +157,16 @@ Recorded 2026-08-16, from the first real `sudo sh deploy/install.sh` run.
   decoration, and no cursor over the UI. Confirmed by `grim` screenshot at
   3840x2160: all three tiles render with real emoji icons and the focus ring
   sits on Kodi.
+- **Moonlight streams from the gaming PC and returns.** The Pi is paired with
+  Sunshine; `moonlight-qt list` reports `Desktop` and `Steam Big Picture`.
+  Launching the tile put the PC's desktop on the TV at 1080p60 and quitting
+  returned to the SESH home screen with `current` back to `null` and both
+  events recorded. Two things learned: `moonlight-qt` needs a Qt platform even
+  for CLI work, so pairing over SSH requires `QT_QPA_PLATFORM=offscreen` or it
+  fails with a misleading *"no Qt platform plugin"*; and `stream` accepts
+  `--1080`/`--4K`/`--fps`/`--bitrate`/`--quit-after` directly, so the kiosk
+  does not depend on saved GUI settings. `--quit-after` matters for a room
+  device — without it the host keeps the session open after everyone leaves.
 - **Controller navigation works** once BlueZ's `ClassicBondedOnly` is relaxed
   (a DualShock 4 pairs without bonding, so the HID profile is refused and no
   `/dev/input` node appears while every UI still reports "Connected").
