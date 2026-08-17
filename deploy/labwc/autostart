@@ -27,6 +27,28 @@ else
     CHROMIUM=chromium
 fi
 
+# The kiosk gets its own Chromium profile and never shares the user's default
+# one. Sharing it is not a tidiness concern — it is a hard boot failure. A
+# SingletonLock left in ~/.config/chromium by any earlier desktop Chromium
+# encodes the hostname that created it, and Chromium refuses to touch a profile
+# locked by "another computer". Rename the Pi (raspberrypi -> TatePi, as the
+# stock image invites) and that lock becomes permanent: Chromium exits 21
+# before painting anything, tries to report it through a modal that has no
+# display to appear on, and leaves a black screen with a live mouse cursor and
+# no visible cause. A dedicated profile is never touched by a desktop session,
+# so the collision cannot arise.
+KIOSK_PROFILE="${XDG_DATA_HOME:-$HOME/.local/share}/sesh/chromium"
+mkdir -p "$KIOSK_PROFILE"
+
+# Belt and braces for the unclean-shutdown case. A same-host stale lock does
+# self-heal — Chromium checks whether the recorded pid is alive — but a lock
+# written under a previous hostname never will. Pulling the plug on a room
+# appliance is normal use, so clear the lock when no kiosk is running rather
+# than let a power cut plus a later rename brick the screen.
+if ! pgrep -f "user-data-dir=$KIOSK_PROFILE" >/dev/null 2>&1; then
+    rm -f "$KIOSK_PROFILE"/Singleton*
+fi
+
 # --password-store=basic: without it Chromium asks gnome-keyring to unlock,
 # which throws a modal "Unlock Keyring — Authentication required" dialog over
 # the kiosk. There is no keyboard on a TV to dismiss it, so the room is stuck.
@@ -34,6 +56,7 @@ fi
     --kiosk \
     --ozone-platform=wayland \
     --enable-features=UseOzonePlatform \
+    --user-data-dir="$KIOSK_PROFILE" \
     --password-store=basic \
     --noerrdialogs \
     --disable-infobars \
