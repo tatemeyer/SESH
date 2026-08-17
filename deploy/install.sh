@@ -125,6 +125,20 @@ fi
 
 echo "==> Starting labwc on login to tty1"
 PROFILE="${SESH_HOME}/.bash_profile"
+# Bash reads ~/.bash_profile INSTEAD of ~/.profile for login shells. Creating
+# this file where none existed therefore silently drops whatever ~/.profile
+# did — on a stock Pi that is the line sourcing ~/.bashrc, so an SSH login
+# lands without nvm, ~/.local/bin, or any other shell setup, with nothing to
+# suggest the installer caused it. The kiosk on tty1 never notices because it
+# execs labwc immediately; every other login shell does. Seed the fallback
+# before appending the kiosk hook.
+if [ ! -e "$PROFILE" ]; then
+    cat > "$PROFILE" <<'EOF'
+# Bash reads this file instead of ~/.profile for login shells, so source it
+# explicitly to keep ~/.bashrc (nvm, PATH, completions) working.
+[ -f "$HOME/.profile" ] && . "$HOME/.profile"
+EOF
+fi
 if ! grep -q "exec labwc" "$PROFILE" 2>/dev/null; then
     cat >> "$PROFILE" <<'EOF'
 

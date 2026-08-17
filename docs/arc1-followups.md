@@ -20,13 +20,12 @@ the merge gate; all came out of the whole-branch review and its fix wave.
    client, so not a server-side storm, but console growth is unbounded in a
    browser that never restarts.
 
-3. **Record that the SIGTERM test has never executed.**
-   `kill_lets_a_unix_child_run_its_shutdown_path` in
-   `crates/seshd/src/launcher/platform.rs` is `#[cfg(unix)]` and was written
-   on a Windows dev machine with no CI in this repo. It is syntax-checked
-   only; its first real run is on the Pi. The neighbouring comment claims the
-   graceful path "is covered by the test below," which is true on Linux and
-   misleading on the dev loop.
+3. ~~**Record that the SIGTERM test has never executed.**~~ **Resolved
+   2026-08-15 on the Pi.** `kill_lets_a_unix_child_run_its_shutdown_path` in
+   `crates/seshd/src/launcher/platform.rs` is `#[cfg(unix)]` and had only ever
+   been syntax-checked on a Windows dev machine. It has now run on the target
+   hardware and passed, as part of a full green suite (62 Rust tests, 26
+   vitest).
 
 4. **Redraw after clearing a launch error.**
    `surfaces/src/main.ts`'s success path clears `state.notice` without calling
@@ -34,32 +33,81 @@ the merge gate; all came out of the whole-branch review and its fix wave.
    practice: a successful launch stacks the app window over SESH, and the
    following `app.launched` event triggers `refresh()` → `draw()`.
 
-## Risks that can only be settled on the Pi
+## Risks that were settled on the Pi
 
-These are ordered by how likely they are to bite during Task 13.
+Bring-up ran on the target hardware on 2026-08-15/16 (Pi 5, 8GB, Bookworm,
+labwc). The outcomes below are measured, not predicted — do not re-litigate
+them from the original risk framing, which was written off-hardware.
 
-1. **The reaper may false-positive on Kodi.**
-   `ProcessPlatform` tracks only the direct child. Debian's `/usr/bin/kodi` is
-   a shell wrapper; if it forks rather than `exec`s — or if `--standalone`'s
-   restart loop respawns the real binary — the tracked pid exits immediately
-   while Kodi stays on screen. `is_running` then returns false, `reap` records
-   a false `app.exited`, `current` clears, and SESH believes nothing is
-   running while an unkillable Kodi covers the TV.
-   *Diagnose:* compare `pgrep -a kodi` against the pid SESH is tracking on
-   first launch. *If it forks:* spawn via `setsid` and signal the process
-   group rather than the child.
+1. ~~**The reaper may false-positive on Kodi.**~~ **Did not materialise.**
+   This was ranked the likeliest failure and it is simply not one. Debian's
+   `/usr/bin/kodi` wrapper does not fork in a way that fools the reaper: the
+   tracked pid is the real one, the exit was detected cleanly, `current`
+   returned to `null`, and no orphan process survived. Verified across all
+   three apps — Kodi (38s), RetroArch (21s), Moonlight (0.6s).
+   **The `setsid`/process-group change this entry prescribes is therefore not
+   required.** It remains defensible as hardening (see risk 3), but anyone
+   reading this doc should know the motivating failure was disproved.
 
-2. **Moonlight's package is not in the Raspberry Pi OS repositories.**
-   `deploy/apps.toml` now specifies `moonlight-qt`, which is the binary name
-   the Debian/Flatpak package installs. If `apt` cannot find it, install it
-   from the Moonlight project's own repository and verify with
-   `which moonlight-qt` before rebooting. Arc 1's Definition of Done requires
-   all three apps to launch and return.
+2. ~~**Moonlight's package is not in the Raspberry Pi OS repositories.**~~
+   **Confirmed and resolved.** `moonlight-qt` 6.1.0-4 installs from the
+   Cloudsmith repository (`distro=debian codename=bookworm`), not from Pi OS.
+   A second, harder problem hid behind it: `moonlight-qt` is Qt6 and Pi OS
+   ships only the Qt5 Wayland plugin, so under labwc it aborted ~600ms after
+   launch with *"no Qt platform plugin could be initialized"* — which presents
+   exactly like a SESH launcher bug. `qt6-wayland` is now an `install.sh`
+   dependency. Moonlight reaches `HostNotFoundError` against the placeholder
+   host, which is the correct failure for an unconfigured Sunshine target.
 
-3. **`kill -TERM` signals the direct child, not its process group.**
+3. **`kill -TERM` signals the direct child, not its process group.** *(Open.)*
    An app launched through a wrapper script would swallow the signal and leave
-   a grandchild behind after the SIGKILL fallback. This is not a regression —
-   `child.kill()` had the identical limitation — but it compounds risk 1.
+   a grandchild behind after the SIGKILL fallback. With risk 1 disproved this
+   is no longer urgent, but it is still the correct shape. An unmerged branch,
+   `origin/claude/sesh-pi-bringup-t213m7` (`1ba1662`), already implements it;
+   it needs review and a decision rather than a rewrite.
+
+## Found during the on-hardware install
+
+Recorded 2026-08-16, from the first real `sudo sh deploy/install.sh` run.
+
+1. ~~**`install.sh` broke non-kiosk login shells.**~~ **Fixed in this change.**
+   The script appends the `exec labwc` hook to `~/.bash_profile`. Bash reads
+   that file *instead of* `~/.profile` for login shells, so creating it where
+   none existed silently dropped the stock Pi `~/.profile` line that sources
+   `~/.bashrc` — costing an SSH login nvm, `~/.local/bin`, and completions,
+   with nothing pointing at the installer. The tty1 kiosk never noticed
+   because it `exec`s labwc before any of that matters. `install.sh` now seeds
+   a `. "$HOME/.profile"` fallback when it creates the file, and leaves a
+   pre-existing `~/.bash_profile` alone.
+
+2. **Nothing supervises the kiosk browser.** *(Open — highest-value next fix.)*
+   `deploy/labwc/autostart` launches Chromium once with `&`. `seshd` has
+   `Restart=always`, but the browser has no equivalent: if it OOMs or crashes,
+   the TV shows an empty labwc desktop indefinitely and the only recovery is a
+   power cycle. For an always-on room device that is the wrong failure mode.
+   The fix is a supervised restart — a user unit with `Restart=always`, or a
+   respawn loop in `autostart`. Deliberately not folded into the first boot
+   verification, so that reboot tests only code paths already exercised.
+
+3. **`/etc/sesh/apps.toml` still ships the placeholder Sunshine host.**
+   `install.sh` prints a reminder to replace `GAMING-PC`/`Desktop`, but
+   nothing enforces it, so the Moonlight tile is installed broken by default.
+   Needs the real host before Moonlight can be said to work.
+
+## Verified on hardware, so treat as settled
+
+- `seshd` runs correctly from its **installed** location as a systemd user
+  unit: `/usr/local/bin/seshd` against `/etc/sesh/apps.toml`,
+  `/usr/local/share/sesh/web`, and `~/.local/share/sesh/sesh.db`. `/api/apps`
+  lists all three apps, the surface bundle serves 200.
+- **The event log survives an uncleanly killed daemon.** A `SIGKILL` with an
+  uncheckpointed 57KB WAL lost nothing — the event read back identically
+  after restart. This is the durability half of the Definition of Done's
+  "survives a reboot"; only the power cycle itself is still unverified.
+- **Controller navigation works** once BlueZ's `ClassicBondedOnly` is relaxed
+  (a DualShock 4 pairs without bonding, so the HID profile is refused and no
+  `/dev/input` node appears while every UI still reports "Connected").
+  Selection moves between tiles and clamps at the grid edge.
 
 ## Deliberate Arc 1 scope decisions, for the record
 
