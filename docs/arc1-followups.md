@@ -159,13 +159,34 @@ Recorded 2026-08-16, from the first real `sudo sh deploy/install.sh` run.
   lists all three apps, the surface bundle serves 200.
 - **The event log survives an uncleanly killed daemon.** A `SIGKILL` with an
   uncheckpointed 57KB WAL lost nothing — the event read back identically
-  after restart. This is the durability half of the Definition of Done's
-  "survives a reboot"; only the power cycle itself is still unverified.
-- **The Pi boots unattended into the SESH home screen.** tty1 autologin →
-  labwc → `autostart` → `seshd` + kiosk Chromium, with no desktop, no window
-  decoration, and no cursor over the UI. Confirmed by `grim` screenshot at
-  3840x2160: all three tiles render with real emoji icons and the focus ring
-  sits on Kodi.
+  after restart. That was the durability half of the Definition of Done's
+  "survives a reboot"; the reboot itself is now done too, below.
+- **The Pi boots unattended into the SESH home screen, on the chain that is
+  actually in `master`.** *(Closed 2026-08-17.)* This needs stating carefully,
+  because an earlier version of this bullet claimed the same thing and was
+  measuring a different system. That bring-up boot predated PR #4, so the
+  kiosk-profile fix — the one that stops the TV coming up black — had never
+  been exercised from a cold start. Before rebooting, all three deployed
+  artifacts were diffed against `master` (`autostart` identical, the installed
+  binary carrying PR #7's reconciliation marker, the web bundle byte-identical
+  to a fresh build), so the boot tested the repo rather than a stale install.
+
+  Timeline from a cold boot, captured unattended:
+
+  | t+ | link |
+  |---|---|
+  | 17s | tty1 autologin → labwc, wayland socket up |
+  | 18s | `autostart` → `seshd` answering `/api/apps` |
+  | 18s | kiosk Chromium process alive |
+  | 22s | surface fetched, parsed and **executed** — its WebSocket established |
+
+  Confirmed three independent ways: the owner watched the TV come up into SESH;
+  a `grim` capture at 3840x2160 shows the wordmark, all three tiles with real
+  emoji icons, and the focus ring on Kodi; and all 8 pre-reboot events read
+  back byte-identical afterwards, with reconciliation correctly finding nothing
+  to close.
+
+  **Arc 1's Definition of Done is therefore met in full.**
 - **Moonlight streams from the gaming PC and returns.** The Pi is paired with
   Sunshine; `moonlight-qt list` reports `Desktop` and `Steam Big Picture`.
   Launching the tile put the PC's desktop on the TV at 1080p60 and quitting
@@ -180,6 +201,45 @@ Recorded 2026-08-16, from the first real `sudo sh deploy/install.sh` run.
   (a DualShock 4 pairs without bonding, so the HID profile is refused and no
   `/dev/input` node appears while every UI still reports "Connected").
   Selection moves between tiles and clamps at the grid edge.
+
+## Operating this box: two traps worth not rediscovering
+
+Neither is a SESH bug. Both cost real time during Arc 1, and the second cost it
+twice.
+
+1. **`grim` blocks forever on a long-idle session.** After ~17 hours sitting on
+   a static home screen, `wlr-screencopy` stopped returning frames entirely:
+   `grim` hung past 300s and through three 45s retries, while labwc still
+   answered new clients, `wlr-randr` returned the full mode list, Chromium held
+   its socket open, and the TV reported `pwr-state: on` over HDMI-CEC. Forcing
+   an output commit did not help; nor did CEC `image-view-on` plus an
+   active-source claim. Immediately after a reboot the same command succeeded
+   on the first attempt, so it is a property of the idle session, not of the
+   hardware or the compositor build.
+
+   Consequences: **always bound `grim` with `timeout`** in anything unattended,
+   and do not treat a missing screenshot as evidence of a black screen. The
+   reliable, display-independent proof that the kiosk really loaded is an
+   ESTABLISHED connection to `:7373` from a `chromium` process —
+   `ss -tnp | grep '127.0.0.1:7373.*chromium'`. The surface opens that socket as
+   the last thing `main.ts` does, so it proves the page was fetched, parsed and
+   executed. Chromium merely being alive proves nothing: during the black-screen
+   failure it was alive too, for the second before it exited 21.
+
+2. **`pgrep -f` / `pkill -f` match your own command line.** Recorded once
+   already after `pgrep -f kodi` produced a false "still running" that appeared
+   to falsify a spec's premise. It then happened again in the `pkill` form,
+   where the pattern matched the invoking shell and killed it mid-task. The
+   pattern is in your own `argv`, so the tool sees it.
+
+   Use an exact-name match (`pgrep -x kodi.bin`), `ps -eo pid,comm`, or resolve
+   pids first and `kill` those. Reserve `-f` for patterns that genuinely cannot
+   appear in the command you are typing — `autostart`'s
+   `pgrep -f "user-data-dir=$KIOSK_PROFILE"` is legitimate, and was checked by
+   confirming every returned pid was really `chromium`.
+
+   The verification harness in `~/sesh-boot-verify/` applies both lessons; its
+   `README.md` explains how to re-arm it for a future reboot.
 
 ## Deliberate Arc 1 scope decisions, for the record
 
