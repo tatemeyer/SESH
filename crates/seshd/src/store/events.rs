@@ -1,63 +1,15 @@
-//! The append-only event log. The only module in SESH that writes SQL.
-
-use std::path::Path;
-use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
+//! The append-only event log.
+//!
+//! There is deliberately no update or delete operation here, and there must
+//! never be one. The log is the only authoritative state in SESH; everything
+//! else is derived from it.
 
 use anyhow::Result;
-use rusqlite::Connection;
 
+use super::{now_ms, Store};
 use crate::event::{Event, NewEvent};
 
-const SCHEMA: &str = r#"
-CREATE TABLE IF NOT EXISTS events (
-    id      INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts_ms   INTEGER NOT NULL,
-    kind    TEXT    NOT NULL,
-    actors  TEXT    NOT NULL,
-    subject TEXT,
-    payload TEXT    NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_events_kind ON events(kind);
-CREATE INDEX IF NOT EXISTS idx_events_ts   ON events(ts_ms);
-
-CREATE TABLE IF NOT EXISTS people (
-    id     TEXT PRIMARY KEY,
-    name   TEXT NOT NULL,
-    avatar TEXT
-);
-"#;
-
-/// The append-only event log, backed by SQLite.
-///
-/// There is deliberately no update or delete operation. The log is the only
-/// authoritative state in SESH; everything else is derived from it.
-pub struct Store {
-    conn: Mutex<Connection>,
-}
-
 impl Store {
-    /// Open (or create) the log at `path`.
-    pub fn open(path: &Path) -> Result<Self> {
-        Self::init(Connection::open(path)?)
-    }
-
-    /// Open an ephemeral in-memory log. For tests.
-    pub fn open_in_memory() -> Result<Self> {
-        Self::init(Connection::open_in_memory()?)
-    }
-
-    fn init(conn: Connection) -> Result<Self> {
-        // journal_mode returns the resulting mode, so it must be queried,
-        // not executed. In-memory databases report "memory" and that is fine.
-        let _mode: String = conn.query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0))?;
-        conn.pragma_update(None, "synchronous", "FULL")?;
-        conn.execute_batch(SCHEMA)?;
-        Ok(Self {
-            conn: Mutex::new(conn),
-        })
-    }
-
     /// Append an event and return it with its assigned id and timestamp.
     pub fn append(&self, new: NewEvent) -> Result<Event> {
         let ts_ms = now_ms();
@@ -123,13 +75,6 @@ impl Store {
             conn.query_row("SELECT COALESCE(MAX(id), 0) FROM events", [], |r| r.get(0))?;
         Ok(id)
     }
-}
-
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock before unix epoch")
-        .as_millis() as i64
 }
 
 #[cfg(test)]

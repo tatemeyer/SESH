@@ -6,7 +6,9 @@
 pub mod api;
 pub mod config;
 pub mod event;
+pub mod join;
 pub mod launcher;
+pub mod presence;
 pub mod projection;
 pub mod projections;
 pub mod reconcile;

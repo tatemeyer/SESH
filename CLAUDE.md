@@ -14,8 +14,9 @@ These are load-bearing. Breaking one is a design change, not a bug fix — stop
 and raise it rather than working around it.
 
 - **The event log is append-only.** No `UPDATE` or `DELETE` may ever target the
-  `events` table, in code or in a migration. `crates/seshd/src/store.rs` is the
-  only module that writes SQL.
+  `events` table, in code or in a migration. `crates/seshd/src/store/` is the
+  only module that writes SQL — the whole directory, so the guarantee is still
+  auditable by reading one place.
 - **`Room::record` is the only write path.** Nothing else may touch the store.
   The rule is "you cannot change state without leaving a record."
 - **All derived state is rebuildable from the log alone.** Projections may
@@ -62,7 +63,7 @@ doc comment, including public struct fields and module `//!` headers.
 - **Dependencies are pinned.** Do not add, remove, or bump one without saying
   why it is necessary.
 - Arc 1 is deliberately **unauthenticated and LAN-bound**. The per-person token
-  model arrives in Arc 3. Absence of auth is a decided tradeoff, not an
+  model arrives in Arc 2. Absence of auth is a decided tradeoff, not an
   oversight — but nothing may make it worse than "unauthenticated on a home
   LAN" (no shell invocation, no escaping the app registry).
 

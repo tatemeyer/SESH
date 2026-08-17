@@ -49,6 +49,29 @@ pub fn load_apps_file(path: &Path) -> Result<Vec<AppSpec>> {
     load_apps(&toml_str)
 }
 
+/// The address a phone on the LAN can reach this Pi at.
+///
+/// This cannot be taken from the request, which is the whole difficulty: the
+/// TV fetches the join QR over `127.0.0.1`, so a QR built from the `Host`
+/// header would encode loopback and be unusable by every phone that scanned it.
+///
+/// The trick is a *connected* UDP socket. Nothing is ever sent — connecting a
+/// datagram socket only makes the kernel consult the routing table and pick
+/// the source address it would use to reach that destination. On a Pi with
+/// both Ethernet and Wi-Fi on one subnet, that is the interface the default
+/// route prefers, which is the right answer.
+pub fn detect_lan_ip() -> Option<std::net::IpAddr> {
+    // A routable public address, purely as a direction to look in. No packet
+    // is sent to it and it is never contacted.
+    const ELSEWHERE: &str = "1.1.1.1:80";
+
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    socket.connect(ELSEWHERE).ok()?;
+    let ip = socket.local_addr().ok()?.ip();
+
+    (!ip.is_loopback() && !ip.is_unspecified()).then_some(ip)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -143,6 +166,17 @@ command = "kodi"
     #[test]
     fn malformed_toml_is_rejected() {
         assert!(load_apps("this is not toml [[[").is_err());
+    }
+
+    // Deliberately tolerant: a machine with no route has nothing to find, and
+    // that is a legitimate answer rather than a failure. What is asserted is
+    // that when an address *is* found it is one a phone could actually use.
+    #[test]
+    fn any_detected_address_is_usable_by_a_phone() {
+        if let Some(ip) = detect_lan_ip() {
+            assert!(!ip.is_loopback(), "a QR pointing at loopback is useless");
+            assert!(!ip.is_unspecified(), "0.0.0.0 is not an address to visit");
+        }
     }
 
     #[test]

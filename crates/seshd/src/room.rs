@@ -12,7 +12,7 @@ use tokio::sync::broadcast;
 use crate::event::{Event, NewEvent};
 use crate::projection::Projection;
 use crate::projections::roster::Roster;
-use crate::store::Store;
+use crate::store::{Person, Store};
 
 /// Broadcast backlog. A subscriber that falls this far behind is lagged.
 /// Surfaces are level-triggered: a lagged or dropped client reconnects and
@@ -76,6 +76,27 @@ impl Room {
     /// Read history. Pass `limit = -1` for no limit.
     pub fn events_since(&self, after_id: i64, limit: i64) -> Result<Vec<Event>> {
         self.store.read_since(after_id, limit)
+    }
+
+    // The identity registry, reached through the Room rather than by handing
+    // out the `Store`. Exposing the store would put `append` within reach of
+    // every caller and quietly retire the "Room::record is the only write
+    // path" invariant, so these delegate instead. `people` is not the log and
+    // is not append-only — see `store::people`.
+
+    /// Register a person and return them, allocating an id from their name.
+    pub fn register_person(&self, name: &str, token: &str) -> Result<Person> {
+        self.store.insert_person(name, token)
+    }
+
+    /// Resolve a phone token to whoever holds it.
+    pub fn person_by_token(&self, token: &str) -> Result<Option<Person>> {
+        self.store.person_by_token(token)
+    }
+
+    /// Everyone the house knows, oldest join first.
+    pub fn people(&self) -> Result<Vec<Person>> {
+        self.store.people()
     }
 }
 

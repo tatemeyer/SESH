@@ -184,7 +184,7 @@ Recorded 2026-08-16, from the first real `sudo sh deploy/install.sh` run.
 ## Deliberate Arc 1 scope decisions, for the record
 
 - **No authentication.** `seshd` binds `0.0.0.0:7373` unauthenticated. The
-  per-person token model arrives with phones in Arc 3. There is no injection
+  per-person token model arrives with phones in Arc 2. There is no injection
   path and no way to escape the app registry — commands and arguments come
   only from a root-installed `apps.toml`, and `ProcessPlatform::spawn` never
   invokes a shell. The residual is that any LAN host can append unbounded
@@ -195,10 +195,10 @@ Recorded 2026-08-16, from the first real `sudo sh deploy/install.sh` run.
   emits would defeat its purpose.
 - **The `people` table is created but unused.** It is source data — an
   identity registry — not a projection, so it does not fall under the
-  "rebuildable from the log" invariant. Arc 3 will need an `ALTER TABLE` to
+  "rebuildable from the log" invariant. Arc 2 will need an `ALTER TABLE` to
   add BLE identifiers and a phone token; the append-only, no-migrations
   discipline covers the `events` table only.
 - **Phones will load `http://<pi>:7373`, which is not a secure context.**
   The TV kiosk uses `127.0.0.1`, which is, so the Gamepad API works there. No
   service workers or `getUserMedia` on phones without TLS — worth folding into
-  Arc 3's spec.
+  Arc 2's spec.
