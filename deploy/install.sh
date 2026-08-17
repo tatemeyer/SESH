@@ -50,6 +50,39 @@ if ! command -v moonlight-qt >/dev/null 2>&1; then
     echo "         Install it from https://github.com/moonlight-stream/moonlight-qt and re-run."
 fi
 
+echo "==> Letting game controllers attach (BlueZ HID)"
+# BlueZ's input profile defaults to ClassicBondedOnly=true, which refuses the
+# HID profile to any device that is not bonded. A DualShock 4 pairs without
+# bonding, so the controller connects at the Bluetooth layer and is then
+# rejected at the input layer: `bluetoothd` logs
+#     hidp_add_connection() Rejected connection from !bonded device
+# and no /dev/input node ever appears. The controller shows as "Connected" in
+# every UI while being invisible to the browser, which is a genuinely
+# confusing place to land. SESH's TV UI is controller-driven, so this is a
+# requirement, not a convenience.
+#
+# The tradeoff is deliberate and matches Arc 1's LAN trust model: an unbonded
+# HID device in Bluetooth range can send input. In a living room that is the
+# same threat as someone picking the controller up.
+INPUT_CONF=/etc/bluetooth/input.conf
+if [ -f "$INPUT_CONF" ]; then
+    if grep -qE '^[[:space:]]*ClassicBondedOnly[[:space:]]*=' "$INPUT_CONF"; then
+        sed -i 's/^[[:space:]]*ClassicBondedOnly[[:space:]]*=.*/ClassicBondedOnly=false/' "$INPUT_CONF"
+    elif grep -qE '^[[:space:]]*#[[:space:]]*ClassicBondedOnly' "$INPUT_CONF"; then
+        sed -i 's/^[[:space:]]*#[[:space:]]*ClassicBondedOnly.*/ClassicBondedOnly=false/' "$INPUT_CONF"
+    elif grep -qE '^[[:space:]]*\[General\]' "$INPUT_CONF"; then
+        # Appending a second [General] would make the key file fail to parse,
+        # so extend the existing one instead.
+        sed -i '0,/^[[:space:]]*\[General\]/s//[General]\nClassicBondedOnly=false/' "$INPUT_CONF"
+    else
+        printf '\n[General]\nClassicBondedOnly=false\n' >> "$INPUT_CONF"
+    fi
+    systemctl restart bluetooth || echo "warning: could not restart bluetooth; reboot to apply."
+else
+    echo "warning: $INPUT_CONF not found. If a controller pairs but never appears"
+    echo "         as an input device, set ClassicBondedOnly=false there by hand."
+fi
+
 echo "==> Adding $SESH_USER to the groups the compositor needs"
 usermod -aG video,input,render,audio "$SESH_USER"
 loginctl enable-linger "$SESH_USER"
