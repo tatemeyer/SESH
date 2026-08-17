@@ -552,7 +552,10 @@ Spotify feature beyond search, queue, and skip. Playlists, recommendations, and
 
 ## Depends on
 
-**Arc 1 is not closed until the Pi reboots.** This box has been up 16 hours and
-booted at 20:58 on 2026-08-16 — *before* the kiosk-profile fix merged at 02:14.
-The boot chain that is now in `master` has therefore never run. That is a Phase
-0 of one line, and it should happen before any of this.
+~~**Arc 1 is not closed until the Pi reboots.**~~ **Done 2026-08-17, before any
+of this started.** The Pi was rebooted and came up into the SESH home screen
+unattended in 22 seconds, on the boot chain that is actually in `master` — the
+deployed artifacts were diffed against it first. All 8 events survived. Arc 1's
+Definition of Done is met in full; see `docs/arc1-followups.md`.
+
+Nothing else blocks Phase 1.
