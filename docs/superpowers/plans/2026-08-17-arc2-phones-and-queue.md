@@ -283,12 +283,12 @@ Verification record: `docs/arc2-phase1-verification.md`.
 
 *No network, no hardware, no Spotify. This is the phase that has to be right.*
 
-- [ ] **2.1 Event kinds**
+- [x] **2.1 Event kinds**
 
   `MUSIC_QUEUED`, `MUSIC_VETOED`, `MUSIC_SKIPPED`, `MUSIC_STARTED` in
   `event::kind`.
 
-- [ ] **2.2 The `Queue` projection**
+- [x] **2.2 The `Queue` projection**
 
   `crates/seshd/src/projections/queue.rs`, implementing `Projection` like
   `Roster`. Holds pending entries in queue order and the now-playing entry, each
@@ -310,7 +310,7 @@ Verification record: `docs/arc2-phase1-verification.md`.
   kinds are ignored; a veto naming an entry that no longer exists is dropped
   rather than panicking.
 
-- [ ] **2.3 The veto threshold**
+- [x] **2.3 The veto threshold**
 
   A pure function `should_skip(votes: &BTreeSet<String>, present: &[String])`.
   Strict majority of those present, minimum two — so one person in an empty room
@@ -320,13 +320,13 @@ Verification record: `docs/arc2-phase1-verification.md`.
   does; a vote from someone no longer present does not count toward the majority
   but is not an error.
 
-- [ ] **2.4 Hang it on `Room`**
+- [x] **2.4 Hang it on `Room`**
 
   `queue: Mutex<Queue>` beside `roster`, rebuilt in `Room::new`, folded in
   `record`, exposed via `Room::queue()`. Same lock order as documented in
   `room.rs`; no guard held across an `.await`.
 
-- [ ] **2.5 The queue endpoints**
+- [x] **2.5 The queue endpoints**
 
   - `GET /api/music` — now playing, pending, and each entry's veto tally. Open,
     like the rest of the read surface; the TV needs it.
@@ -335,6 +335,8 @@ Verification record: `docs/arc2-phase1-verification.md`.
 
   No player calls yet. This phase ends with a queue that is completely correct
   and completely silent.
+
+Verification record: `docs/arc2-phase2-verification.md`.
 
 **Phase 2 done when:** two bearer tokens can build a queue, vetoes tally, the
 threshold fires, and the whole thing rebuilds identically from the log. Zero
