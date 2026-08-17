@@ -89,7 +89,20 @@ loginctl enable-linger "$SESH_USER"
 
 echo "==> Installing binary, surface bundle, and configuration"
 install -Dm755 target/release/seshd /usr/local/bin/seshd
-install -Dm644 deploy/apps.toml /etc/sesh/apps.toml
+
+# apps.toml is configuration, not an artifact. It is the one installed file a
+# user is *told* to edit — it ships with a placeholder Sunshine host and the
+# closing message asks them to replace it — so overwriting it on every run
+# means the installer reverts that edit and silently breaks the Moonlight tile,
+# presenting as Moonlight failing for no reason. Keep an existing copy and drop
+# the shipped template beside it, so an upgrade can still see what changed.
+if [ -e /etc/sesh/apps.toml ]; then
+    APPS_TOML_KEPT=yes
+    install -Dm644 deploy/apps.toml /etc/sesh/apps.toml.dist
+else
+    APPS_TOML_KEPT=no
+    install -Dm644 deploy/apps.toml /etc/sesh/apps.toml
+fi
 rm -rf /usr/local/share/sesh/web
 mkdir -p /usr/local/share/sesh/web
 cp -r surfaces/dist/. /usr/local/share/sesh/web/
@@ -163,7 +176,12 @@ echo
 echo "Installed for user: $SESH_USER"
 echo
 echo "Before rebooting:"
-echo "  1. Edit /etc/sesh/apps.toml and replace GAMING-PC with your Sunshine host."
+if [ "$APPS_TOML_KEPT" = yes ]; then
+    echo "  1. Kept your existing /etc/sesh/apps.toml. This release's template is"
+    echo "     at /etc/sesh/apps.toml.dist if you want to diff it."
+else
+    echo "  1. Edit /etc/sesh/apps.toml and replace GAMING-PC with your Sunshine host."
+fi
 echo "  2. Confirm each command resolves: which kodi retroarch moonlight-qt"
 echo
 echo "Then: sudo reboot"

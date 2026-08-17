@@ -128,12 +128,15 @@ Recorded 2026-08-16, from the first real `sudo sh deploy/install.sh` run.
    the exit *time* is unknown. Design in
    `docs/superpowers/specs/2026-08-16-launch-reconciliation.md`.
 
-5. **`install.sh` clobbers a configured `apps.toml`.** *(Open.)*
-   Line 92 runs `install -Dm644 deploy/apps.toml /etc/sesh/apps.toml`
-   unconditionally, so re-running the installer silently reverts the Sunshine
-   host to the `GAMING-PC` placeholder. The installer prints a reminder to
-   edit that file, then overwrites the edit on the next run. Presents as
-   Moonlight breaking for no reason.
+5. ~~**`install.sh` clobbers a configured `apps.toml`.**~~ **Fixed.**
+   The installer used to run `install -Dm644 deploy/apps.toml
+   /etc/sesh/apps.toml` unconditionally, so re-running it silently reverted
+   the Sunshine host to the `GAMING-PC` placeholder — having just told the
+   user to edit that very file. It presented as Moonlight breaking for no
+   reason. `apps.toml` is configuration rather than a build artifact, so the
+   installer now keeps an existing copy and writes the shipped template to
+   `/etc/sesh/apps.toml.dist` beside it, which also gives an upgrade something
+   to diff against. The closing message adapts to say which happened.
 
 6. ~~**`/etc/sesh/apps.toml` still ships the placeholder Sunshine host.**~~
    **Configured on TatePi 2026-08-16.** The repo template still ships
