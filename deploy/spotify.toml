@@ -1,0 +1,28 @@
+# Spotify credentials for the house account.
+#
+# One account for the whole house, not one per person. A Spotify app in
+# Development Mode allows five authorised users, so per-person authorisation
+# would refuse the sixth friend through the door.
+#
+# Get these from https://developer.spotify.com/dashboard:
+#   1. Create an app (any name; "SESH" is fine).
+#   2. Add this exact redirect URI:  http://127.0.0.1:7374/callback
+#   3. Copy the client id and secret below.
+#
+# Then authorise once, on the Pi:
+#   seshd auth-spotify
+#
+# That writes a refresh token to ~/.local/share/sesh/spotify-token.json (0600).
+# The secret below and that token are the only credentials in SESH, and neither
+# ever goes near the event log — the log is append-only and served
+# unauthenticated on the LAN, so anything written there cannot be taken back.
+#
+# The account must be Premium. Both librespot and Development Mode require it.
+
+client_id = ""
+client_secret = ""
+
+# The Spotify Connect device to play through. This is the name librespot
+# advertises, set up in Phase 6 — until then there is nothing to transfer to
+# and `transfer` will say so by name.
+device_name = "SESH"

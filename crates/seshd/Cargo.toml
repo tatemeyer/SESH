@@ -6,6 +6,10 @@ rust-version = "1.82"
 
 [dependencies]
 anyhow = "1"
+# Object-safe `async fn` in a trait, which stable Rust still does not provide.
+# `Arc<dyn Player>` is required so the queue logic can be driven by a mock with
+# no network; without this the seam would have to be an enum or a boxed future.
+async-trait = "0.1"
 axum = { version = "0.7", features = ["ws"] }
 clap = { version = "4", features = ["derive"] }
 # Join codes and phone tokens need cryptographic randomness. `getrandom` is the
@@ -16,6 +20,10 @@ getrandom = "0.2"
 # The TV renders the join QR itself. A JS QR library would be the first runtime
 # dependency in a deliberately framework-free surface, and the kiosk has no CDN.
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+# Spotify Web API calls. `rustls-tls` rather than the default native-tls so the
+# Pi does not need an OpenSSL toolchain, and `default-features = false` keeps
+# the unused ones out. Shares hyper 1.x with axum rather than adding a stack.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
