@@ -6,8 +6,10 @@ use futures_util::StreamExt;
 use seshd::api::{router_with_ws, AppState};
 use seshd::config::AppSpec;
 use seshd::event::NewEvent;
+use seshd::join::JoinCodes;
 use seshd::launcher::platform::MockPlatform;
 use seshd::launcher::Launcher;
+use seshd::presence::Presence;
 use seshd::room::Room;
 use seshd::store::Store;
 
@@ -27,6 +29,9 @@ async fn serve() -> (String, String, Arc<Room>) {
     let app = router_with_ws(AppState {
         room: room.clone(),
         launcher,
+        join: Arc::new(JoinCodes::new()),
+        presence: Arc::new(Presence::new()),
+        join_base: "http://pi.test:7373".into(),
     });
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -1,8 +1,13 @@
-//! The LAN-facing HTTP and WebSocket API. Arc 1 is unauthenticated by
-//! design; the per-person token model arrives with phones in Arc 3.
+//! The LAN-facing HTTP and WebSocket API.
+//!
+//! Mostly unauthenticated, deliberately. Arc 2 adds per-person tokens only
+//! where an action needs an actor attached to it; reads stay open, and
+//! `POST /api/events` stays the open ingest port the invariants describe.
 
 pub mod apps;
+pub mod auth;
 pub mod events;
+pub mod join;
 pub mod ws;
 
 use std::sync::Arc;
@@ -10,16 +15,28 @@ use std::sync::Arc;
 use axum::routing::{get, post};
 use axum::Router;
 
+use crate::join::JoinCodes;
 use crate::launcher::Launcher;
+use crate::presence::Presence;
 use crate::room::Room;
 
-/// Everything the API handlers need. Cheap to clone — both fields are `Arc`.
+/// Everything the API handlers need. Cheap to clone — the fields are `Arc`s
+/// and one short string.
 #[derive(Clone)]
 pub struct AppState {
     /// The event log and its projections.
     pub room: Arc<Room>,
     /// The app launcher.
     pub launcher: Arc<Launcher>,
+    /// The live join code shown on the TV.
+    pub join: Arc<JoinCodes>,
+    /// Who is in the room, per their phones.
+    pub presence: Arc<Presence>,
+    /// Origin the QR points phones at, e.g. `http://192.168.40.195:7373`.
+    ///
+    /// It cannot be derived from the request: the TV fetches the QR over
+    /// `127.0.0.1`, and a QR encoding loopback is a QR no phone can use.
+    pub join_base: String,
 }
 
 /// Build the API router. Static file serving is added by `main`.
@@ -33,6 +50,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/apps", get(apps::list_apps))
         .route("/api/apps/:id/launch", post(apps::launch_app))
         .route("/api/apps/quit", post(apps::quit_app))
+        .route("/api/join/qr.svg", get(join::join_qr))
+        .route("/api/join", post(join::join))
+        .route("/api/me", get(join::me))
+        .route("/api/heartbeat", post(join::heartbeat))
         .with_state(state)
 }
 
@@ -45,18 +66,19 @@ pub fn router_with_ws(state: AppState) -> Router {
         .merge(router(state))
 }
 
+/// Shared fixtures, so each endpoint's tests can live beside its handler
+/// instead of piling up in this file.
 #[cfg(test)]
-mod tests {
+pub(crate) mod testing {
     use super::*;
     use crate::config::AppSpec;
     use crate::launcher::platform::MockPlatform;
     use crate::store::Store;
     use axum::body::Body;
-    use axum::http::{Request, StatusCode};
-    use http_body_util::BodyExt;
-    use tower::ServiceExt;
+    use axum::http::Request;
 
-    fn app() -> (Router, Arc<Room>, Arc<Launcher>) {
+    /// A router over an in-memory room with one app registered.
+    pub fn app() -> (Router, AppState) {
         let room = Room::new(Store::open_in_memory().unwrap()).unwrap();
         let launcher = Launcher::new(
             vec![AppSpec {
@@ -72,20 +94,27 @@ mod tests {
         let state = AppState {
             room: room.clone(),
             launcher: launcher.clone(),
+            join: Arc::new(JoinCodes::new()),
+            presence: Arc::new(Presence::new()),
+            join_base: "http://pi.test:7373".into(),
         };
-        (router(state), room, launcher)
+        (router(state.clone()), state)
     }
 
-    async fn json(response: axum::response::Response) -> serde_json::Value {
+    /// Parse a response body as JSON.
+    pub async fn json(response: axum::response::Response) -> serde_json::Value {
+        use http_body_util::BodyExt;
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         serde_json::from_slice(&bytes).unwrap()
     }
 
-    fn get(uri: &str) -> Request<Body> {
+    /// A bare GET. Named `get_req` because `axum::routing::get` is in scope.
+    pub fn get_req(uri: &str) -> Request<Body> {
         Request::builder().uri(uri).body(Body::empty()).unwrap()
     }
 
-    fn post_empty(uri: &str) -> Request<Body> {
+    /// A POST with no body.
+    pub fn post_empty(uri: &str) -> Request<Body> {
         Request::builder()
             .method("POST")
             .uri(uri)
@@ -93,10 +122,39 @@ mod tests {
             .unwrap()
     }
 
+    /// A POST carrying a JSON body, and optionally a bearer token.
+    pub fn post_json(uri: &str, body: &str, token: Option<&str>) -> Request<Body> {
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("content-type", "application/json");
+        if let Some(token) = token {
+            builder = builder.header("authorization", format!("Bearer {token}"));
+        }
+        builder.body(Body::from(body.to_string())).unwrap()
+    }
+
+    /// A GET carrying a bearer token.
+    pub fn get_with_token(uri: &str, token: &str) -> Request<Body> {
+        Request::builder()
+            .uri(uri)
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::testing::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
     #[tokio::test]
     async fn get_events_is_empty_on_a_fresh_log() {
-        let (app, _, _) = app();
-        let response = app.oneshot(get("/api/events")).await.unwrap();
+        let (app, _state) = app();
+        let response = app.oneshot(get_req("/api/events")).await.unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(json(response).await, serde_json::json!([]));
@@ -104,7 +162,8 @@ mod tests {
 
     #[tokio::test]
     async fn post_events_appends_and_returns_the_stored_event() {
-        let (app, room, _) = app();
+        let (app, state) = app();
+        let room = &state.room;
         let request = Request::builder()
             .method("POST")
             .uri("/api/events")
@@ -123,14 +182,15 @@ mod tests {
 
     #[tokio::test]
     async fn get_events_honours_after_and_limit() {
-        let (app, room, _) = app();
+        let (app, state) = app();
+        let room = &state.room;
         for i in 0..4 {
             room.record(crate::event::NewEvent::new(format!("k{i}")))
                 .unwrap();
         }
 
         let response = app
-            .oneshot(get("/api/events?after=1&limit=2"))
+            .oneshot(get_req("/api/events?after=1&limit=2"))
             .await
             .unwrap();
         let body = json(response).await;
@@ -145,18 +205,19 @@ mod tests {
 
     #[tokio::test]
     async fn get_roster_reflects_presence_events() {
-        let (app, room, _) = app();
+        let (app, state) = app();
+        let room = &state.room;
         room.record(crate::event::NewEvent::new(crate::event::kind::PRESENCE_ARRIVED).actor("sam"))
             .unwrap();
 
-        let response = app.oneshot(get("/api/roster")).await.unwrap();
+        let response = app.oneshot(get_req("/api/roster")).await.unwrap();
         assert_eq!(json(response).await, serde_json::json!(["sam"]));
     }
 
     #[tokio::test]
     async fn get_apps_lists_the_registry_and_nothing_current() {
-        let (app, _, _) = app();
-        let body = json(app.oneshot(get("/api/apps")).await.unwrap()).await;
+        let (app, _state) = app();
+        let body = json(app.oneshot(get_req("/api/apps")).await.unwrap()).await;
 
         assert_eq!(body["apps"][0]["id"], "kodi");
         assert_eq!(body["apps"][0]["name"], "Kodi");
@@ -165,7 +226,8 @@ mod tests {
 
     #[tokio::test]
     async fn launching_an_app_returns_no_content_and_updates_current() {
-        let (app, _, launcher) = app();
+        let (app, state) = app();
+        let launcher = &state.launcher;
         let response = app
             .oneshot(post_empty("/api/apps/kodi/launch"))
             .await
@@ -177,7 +239,7 @@ mod tests {
 
     #[tokio::test]
     async fn launching_an_unknown_app_is_not_found() {
-        let (app, _, _) = app();
+        let (app, _state) = app();
         let response = app
             .oneshot(post_empty("/api/apps/nintendo64/launch"))
             .await
@@ -187,7 +249,8 @@ mod tests {
 
     #[tokio::test]
     async fn quitting_returns_no_content_and_clears_current() {
-        let (app, _, launcher) = app();
+        let (app, state) = app();
+        let launcher = &state.launcher;
         launcher.launch("kodi").unwrap();
 
         let response = app.oneshot(post_empty("/api/apps/quit")).await.unwrap();

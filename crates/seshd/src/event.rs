@@ -85,6 +85,8 @@ pub mod kind {
     pub const APP_LAUNCHED: &str = "app.launched";
     /// An app stopped — quit by SESH or exited on its own.
     pub const APP_EXITED: &str = "app.exited";
+    /// Someone scanned the QR and became a person the house knows.
+    pub const PERSON_JOINED: &str = "person.joined";
 }
 
 #[cfg(test)]

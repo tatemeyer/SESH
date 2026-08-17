@@ -8,6 +8,14 @@ rust-version = "1.82"
 anyhow = "1"
 axum = { version = "0.7", features = ["ws"] }
 clap = { version = "4", features = ["derive"] }
+# Join codes and phone tokens need cryptographic randomness. `getrandom` is the
+# OS entropy syscall and nothing more; it is already in the tree transitively,
+# so depending on it directly adds no compiled code. `rand` would pull a whole
+# PRNG and distributions stack to fill sixteen bytes.
+getrandom = "0.2"
+# The TV renders the join QR itself. A JS QR library would be the first runtime
+# dependency in a deliberately framework-free surface, and the kiosk has no CDN.
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
