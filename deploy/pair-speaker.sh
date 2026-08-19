@@ -1,7 +1,9 @@
 #!/bin/sh
 # Pair the room's Bluetooth speaker and route music to it.
 #
-#     sh deploy/pair-speaker.sh            # pair a new speaker
+#     sh deploy/pair-speaker.sh <MAC>      # pair that device
+#     sh deploy/pair-speaker.sh --scan     # find the MAC first
+#     sh deploy/pair-speaker.sh            # scan, then prompt (needs a terminal)
 #     sh deploy/pair-speaker.sh --show     # what is paired and where music goes
 #
 # Run as your normal user, not root: the sink lives in your session's PipeWire
@@ -37,23 +39,58 @@ show() {
     fi
 }
 
-if [ "${1:-}" = "--show" ]; then
-    show
-    exit 0
+scan() {
+    echo "==> Scanning for 20 seconds. The speaker must be in pairing mode."
+    bluetoothctl --timeout 20 scan on >/dev/null 2>&1 || true
+    echo
+    echo "Devices seen (named ones first — a speaker in pairing mode shows its name):"
+    bluetoothctl devices \
+        | awk '$3 !~ /^([0-9A-F]{2}-){5}[0-9A-F]{2}$/ {print "  " $0}'
+    echo
+    echo "Everything else:"
+    bluetoothctl devices \
+        | awk '$3 ~ /^([0-9A-F]{2}-){5}[0-9A-F]{2}$/ {print "  " $0}' | head -10
+}
+
+case "${1:-}" in
+    --show) show; exit 0 ;;
+    --scan) scan; echo; echo "Then: $0 <MAC>"; exit 0 ;;
+esac
+
+MAC="${1:-}"
+
+# Prompting needs a terminal, and this script is run over ssh, from an agent,
+# and from install-time notes as often as by hand. Taking the MAC as an argument
+# is the path that always works; the prompt is the convenience, not the
+# contract.
+if [ -z "$MAC" ]; then
+    [ -t 0 ] || fail "no MAC given and no terminal to ask on.
+Run '$0 --scan' to find it, then '$0 <MAC>'."
+
+    echo "==> Put the speaker in pairing mode now, then press enter."
+    read -r _
+    scan
+    echo
+    printf "MAC of the speaker: "
+    read -r MAC
 fi
 
-echo "==> Put the speaker in pairing mode now, then press enter."
-read -r _
-
-echo "==> Scanning for 20 seconds"
-bluetoothctl --timeout 20 scan on >/dev/null 2>&1 || true
-bluetoothctl devices | grep -v "$(bluetoothctl devices Paired | cut -d' ' -f2 | paste -sd'|' -)" || true
-echo
-bluetoothctl devices
-echo
-printf "MAC of the speaker: "
-read -r MAC
 [ -n "$MAC" ] || fail "no MAC given"
+echo "$MAC" | grep -qiE '^([0-9a-f]{2}:){5}[0-9a-f]{2}$' \
+    || fail "'$MAC' is not a MAC address (expected AA:BB:CC:DD:EE:FF)"
+
+# BlueZ only knows about a device while discovery is running — outside a scan,
+# `pair` answers "Device not available" even for a speaker sitting in pairing
+# mode two feet away. So hold a scan open across the pairing.
+echo "==> Holding discovery open"
+bluetoothctl --timeout 45 scan on >/dev/null 2>&1 &
+SCAN_PID=$!
+trap 'kill "$SCAN_PID" 2>/dev/null || true' EXIT INT TERM
+sleep 8
+
+bluetoothctl info "$MAC" >/dev/null 2>&1 \
+    || fail "$MAC is not visible. Is it still in pairing mode? Most speakers
+leave it after a minute or two. Press the button again and re-run."
 
 # trust before connect: Trusted=yes is what makes it come back by itself after
 # the speaker is powered off and on, which is the normal way a room is used.
@@ -75,6 +112,19 @@ done
 [ -n "$SINK" ] || fail "connected, but no bluez_output sink appeared after 30s.
 If this device is output-only rather than a true A2DP sink, it cannot be the
 room's speaker. Everything else in SESH still works; music stays on the TV."
+
+# Connecting a Bluetooth sink makes WirePlumber adopt it as the *default*, which
+# would send Kodi, RetroArch and Moonlight to the speaker too — the exact
+# opposite of this phase's promise that game audio stays on the TV. Pin it back.
+# An explicitly configured default is respected across disconnects, so this
+# holds when the speaker is power-cycled.
+HDMI="$(pactl list short sinks | awk -F'\t' '$2 ~ /^alsa_output/ {print $2; exit}')"
+if [ -n "$HDMI" ]; then
+    echo "==> Pinning the default sink back to $HDMI"
+    pactl set-default-sink "$HDMI" || echo "warning: could not pin the default sink."
+else
+    echo "warning: no ALSA sink found to pin the default to; game audio may follow the speaker."
+fi
 
 echo "==> Routing librespot to $SINK"
 mkdir -p "$DROPIN_DIR"

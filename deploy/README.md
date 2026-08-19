@@ -235,9 +235,34 @@ sesh-pair-speaker --show     # what is paired and where music goes
 ```
 
 On a Victrola Brighton, hold the Bluetooth button until the indicator flashes,
-then run the script and follow it. It trusts the device before connecting,
-which is what makes it come back by itself after the speaker is powered off and
-on — the normal way a room gets used.
+then run the script. It trusts the device before connecting, which is what makes
+it come back by itself after the speaker is powered off and on — the normal way
+a room gets used.
+
+Pass the MAC directly when there is no terminal to prompt on (over ssh from a
+script, from an agent, from these notes):
+
+```sh
+sesh-pair-speaker --scan               # find it
+sesh-pair-speaker 2D:D4:65:45:03:4D    # pair it
+```
+
+**Two things the script handles that are easy to get wrong by hand:**
+
+*BlueZ only knows a device while discovery is running.* Outside a scan, `pair`
+answers `Device not available` for a speaker sitting in pairing mode two feet
+away. The script holds a scan open across the pairing.
+
+*Connecting a Bluetooth sink makes WirePlumber adopt it as the **default**.*
+Left alone that sends Kodi, RetroArch and Moonlight to the speaker too — the
+exact opposite of what this phase promises. The script pins the default back to
+HDMI afterwards, and an explicitly configured default survives the speaker being
+power-cycled. If game audio ever starts coming out of the speaker, this is what
+came undone:
+
+```sh
+pactl get-default-sink      # should be the alsa_output HDMI one
+```
 
 The drop-in it writes lives at
 `~/.config/systemd/user/sesh-librespot.service.d/sink.conf` and names the
