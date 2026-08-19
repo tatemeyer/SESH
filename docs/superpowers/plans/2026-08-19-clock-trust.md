@@ -42,7 +42,7 @@ Beyond the repo-wide gate in `CLAUDE.md`:
 
 ## Tasks
 
-- [ ] **Task 1: The `Clock` seam**
+- [x] **Task 1: The `Clock` seam**
 
   New `crates/seshd/src/clock.rs`, declared in `lib.rs`. Module doc stating the
   rule above and why a Pi with no RTC forces it.
@@ -73,7 +73,7 @@ Beyond the repo-wide gate in `CLAUDE.md`:
   `timesyncd` at all (absent file → not synced, forever, and that is correct —
   such a box's clock genuinely is not known good).
 
-- [ ] **Task 2: The store stamps and marks**
+- [x] **Task 2: The store stamps and marks**
 
   `Store` gains a `Clock`. `Store::append` sets `ts_ms` from `clock.now_ms()` as
   today, and when `!clock.synced()` inserts into the payload:
@@ -95,7 +95,7 @@ Beyond the repo-wide gate in `CLAUDE.md`:
   a JSON object is still handled (today's `NewEvent` always builds an object,
   but the store must not panic if that changes).
 
-- [ ] **Task 3: `joined_ms` gets the same treatment**
+- [x] **Task 3: `joined_ms` gets the same treatment**
 
   `store/people.rs` stamps `joined_ms` from the same clock. `people` is a table,
   not the log, so there is no payload to mark — instead, **the roster's order
@@ -110,7 +110,7 @@ Beyond the repo-wide gate in `CLAUDE.md`:
   Tests: two people inserted while unsynced, then a third after sync, still list
   in join order.
 
-- [ ] **Task 4: Startup reconciliation waits, briefly**
+- [x] **Task 4: Startup reconciliation waits, briefly**
 
   In `main.rs`, immediately before `close_unfinished_launches` (currently line
   186, after `Room::new` and before the listener binds): if the clock is not
@@ -133,7 +133,7 @@ Beyond the repo-wide gate in `CLAUDE.md`:
   Tests: with a `TestClock` that never syncs, startup completes and the closing
   row is marked; with one that syncs partway, it waits and the row is unmarked.
 
-- [ ] **Task 5: Durations move to monotonic**
+- [x] **Task 5: Durations move to monotonic**
 
   Three sites, all currently computing an elapsed time from two wall-clock
   reads. Each keeps its parameterised, pure shape — the caller passes the
@@ -159,7 +159,7 @@ Beyond the repo-wide gate in `CLAUDE.md`:
   Tests: for each, a wall clock that jumps forward 13 minutes mid-sequence
   changes nothing about the outcome.
 
-- [ ] **Task 6: Correct `reconcile.rs`'s doc comment**
+- [x] **Task 6: Correct `reconcile.rs`'s doc comment**
 
   It currently claims its `ts_ms` "is the upper bound on when the app died — by
   the time this is recorded, it certainly has." With Task 4 that is true when
@@ -200,9 +200,54 @@ Beyond the repo-wide gate in `CLAUDE.md`:
 
 ## Verification record
 
-To be filled in after Task 7 runs on TatePi, following the pattern of
-`docs/arc2-phase1-verification.md`. Predictions in this plan that the hardware
-contradicts get corrected here rather than quietly dropped.
+### Tasks 1-6, on TatePi 2026-08-19
+
+Gate green: 283 Rust tests (1 ignored), clippy clean under `-D warnings`,
+`cargo fmt --check`, 57 vitest, `vite build`. Up from 258 Rust tests.
+
+**End-to-end against the release binary**, on a spare port with a scratch
+database so the live room was not disturbed:
+
+- `/`, `/join`, `/phone`, `/api/apps`, `/api/music`, `/api/roster` all 200.
+- Joined by rendering `/api/join/qr.svg` and decoding it with `zbarimg`,
+  exactly as a phone camera would: `201 Created`, then a second person the
+  same way.
+- The resulting log carries **no `clock_synced` key on any row** — this box's
+  clock is synced, and the ordinary case must stay byte-identical to what it
+  was before any of this existed. It does.
+- Startup logged no clock warning, because `/run/systemd/timesync/synchronized`
+  already existed and `wait_for_sync` returned without sleeping.
+
+**Two things the plan predicted, corrected by the work itself:**
+
+1. **The roster-order failure needed the clock to step *backwards*, and the
+   step measured on this Pi is forwards.** A forward step leaves join order
+   intact. The fix stands — order was following a clock at all, when `rowid`
+   records the sequence exactly — but it is a robustness fix rather than a
+   measured failure, and `store/people.rs` now says so at the test.
+2. **Task 4's ceiling will usually not be reached, and that is the good
+   outcome.** On the measured boot, NTP landed 9.2s after `seshd` started, so
+   the ten-second wait means reconciliation now runs *after* the clock is set
+   and the row is unmarked with its bound intact. The mark is the fallback, not
+   the expected result.
+
+**One thing that could not be exercised here:** the unsynced path end to end.
+Forcing it means denying the process `/run/systemd/timesync/synchronized`, which
+needs root or a mount namespace, and neither belongs in a test run. It is
+covered by unit tests at every layer — `wait_for_sync`'s ceiling, the store's
+marking, and the reconciliation contradiction — but only Task 7 exercises it on
+real hardware.
+
+### Task 7 — what the reboot must show
+
+Not yet run; needs a cold boot with an app left running.
+
+Expected, given the 9.2s measurement: `seshd`'s log shows the clock warning,
+then `the clock is set; reconciling against it`, and the reconciliation
+`app.exited` carries **no** mark with `ts_ms >= last_alive_ms`. If NTP takes
+longer than ten seconds instead, the row carries `clock_synced: false` and that
+is also a pass. The failure — the one thing that must not appear — is an
+unmarked row whose `ts_ms` is below its own `last_alive_ms`.
 
 ## Not solved here
 
