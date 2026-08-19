@@ -661,6 +661,9 @@ Plus two this plan adds:
 - **Unplugging the speaker mid-song does not lose the queue**, and the log says
   when the sink went away.
 
+Phase 5's surfaces were checked in the room on 2026-08-19; the record, including
+one prediction the room falsified, is `docs/arc2-phase5-verification.md`.
+
 ## Risks, ranked
 
 1. **Spotify Development Mode friction (Phase 3).** Five authorized users is
