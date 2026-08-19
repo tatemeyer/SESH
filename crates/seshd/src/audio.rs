@@ -194,17 +194,24 @@ async fn act_on(change: &Change, room: &Room, player: Option<&Arc<dyn Player>>) 
         return Ok(());
     };
 
-    // Telling the source is best-effort. Failing to pause is worth logging but
-    // must not stop the row being written, which has already happened above.
-    match change {
+    // Telling the source is best-effort, and the failure is *not* returned.
+    // The row is already written, which is the part that matters; and the
+    // ordinary case for a room where nobody has started any music is that
+    // Spotify has no active device and answers 404 to both of these. Returning
+    // an error here put an ERROR in the log on every speaker reconnect, which
+    // teaches whoever reads it to ignore the level.
+    let outcome = match change {
         Change::Lost(_) => {
             tracing::info!(%sink, "the speaker went away; pausing");
-            player.pause().await.context("pausing the source")?;
+            player.pause().await
         }
         Change::Found(_) => {
             tracing::info!(%sink, "the speaker is back; resuming");
-            player.resume().await.context("resuming the source")?;
+            player.resume().await
         }
+    };
+    if let Err(error) = outcome {
+        tracing::warn!(%error, %sink, "recorded the change, but the source did not take it");
     }
     Ok(())
 }
@@ -348,6 +355,28 @@ mod tests {
         let log = room.events_since(0, -1).unwrap();
         assert_eq!(log[0].kind, kind::AUDIO_SINK_FOUND);
         assert!(player.calls().contains(&Call::Resume));
+    }
+
+    // The common case in a quiet room: Spotify has no active device, so pause
+    // and resume both 404. The log must still gain its row, and the failure
+    // must not read as though recording failed.
+    #[tokio::test]
+    async fn a_source_that_refuses_still_leaves_the_row_behind() {
+        use crate::player::mock::MockPlayer;
+        use crate::store::Store;
+
+        let room = Room::new(Store::open_in_memory().unwrap()).unwrap();
+        let player = Arc::new(MockPlayer::new());
+        player.fail_with("no active device");
+        let as_player: Arc<dyn Player> = player.clone();
+
+        act_on(&Change::Lost(VICTROLA.into()), &room, Some(&as_player))
+            .await
+            .expect("a source that refuses is not a failure to record");
+
+        let log = room.events_since(0, -1).unwrap();
+        assert_eq!(log.len(), 1);
+        assert_eq!(log[0].kind, kind::AUDIO_SINK_LOST);
     }
 
     // A box with no Spotify credentials still keeps the log honest.
