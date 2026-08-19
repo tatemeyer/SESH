@@ -346,7 +346,7 @@ network in the test suite.
 
 *First phase needing the outside world.*
 
-- [ ] **3.1 The trait**
+- [x] **3.1 The trait**
 
   `crates/seshd/src/player/mod.rs`:
 
@@ -364,7 +364,7 @@ network in the test suite.
   Plus `MockPlayer` recording calls and returning scripted playback, which is
   what every later test uses.
 
-- [ ] **3.2 Credentials and OAuth**
+- [x] **3.2 Credentials and OAuth**
 
   `/etc/sesh/spotify.toml` (`0640 root:tate`) holds `client_id`,
   `client_secret`, `device_name`. The refresh token goes to
@@ -379,7 +379,7 @@ network in the test suite.
 
   Scopes: `user-read-playback-state`, `user-modify-playback-state`.
 
-- [ ] **3.3 `SpotifyPlayer`**
+- [x] **3.3 `SpotifyPlayer`**
 
   `player/spotify.rs`. Access-token refresh on 401 with a single retry; respect
   `Retry-After` on 429; `search` caps at the API's current maximum of 10 (spec).
@@ -391,7 +391,7 @@ network in the test suite.
   active; the refresh-once-then-fail path against a stub. Live calls are checked
   by hand in 3.4 rather than mocked into a false sense of security.
 
-- [ ] **3.4 Prove it on hardware**
+- [ ] **3.4 Prove it on hardware** *(blocked: needs the house account's client id and secret, and a person to complete the OAuth redirect. Everything else in this phase is done and tested against a stub Spotify in `crates/seshd/tests/spotify_stub.rs`.)*
 
   Authorize the house account, `transfer()` to the Pi's device, search a track,
   enqueue it, `skip()`. Record what the API actually returned, especially

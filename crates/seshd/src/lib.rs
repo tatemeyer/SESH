@@ -8,6 +8,7 @@ pub mod config;
 pub mod event;
 pub mod join;
 pub mod launcher;
+pub mod player;
 pub mod presence;
 pub mod projection;
 pub mod projections;
