@@ -391,12 +391,54 @@ network in the test suite.
   active; the refresh-once-then-fail path against a stub. Live calls are checked
   by hand in 3.4 rather than mocked into a false sense of security.
 
-- [ ] **3.4 Prove it on hardware** *(blocked: needs the house account's client id and secret, and a person to complete the OAuth redirect. Everything else in this phase is done and tested against a stub Spotify in `crates/seshd/tests/spotify_stub.rs`.)*
+- [x] **3.4 Prove it on hardware** *(read paths verified against real Spotify on
+  2026-08-19; `enqueue`/`skip` still unrun — see below)*
 
   Authorize the house account, `transfer()` to the Pi's device, search a track,
   enqueue it, `skip()`. Record what the API actually returned, especially
   anything the February 2026 changes moved. This is the task most likely to
   surface a surprise, which is why it comes before the conductor depends on it.
+
+  Kept as `crates/seshd/tests/spotify_live.rs`, `#[ignore]`d so the gate stays
+  offline and deterministic. Re-run it after any change to `player/spotify.rs`
+  and after Spotify announces an API change:
+
+  ```text
+  cargo test --test spotify_live -- --ignored --nocapture
+  ```
+
+  **What the real API returned.** No surprises, which is itself the finding —
+  the February 2026 changes had already been absorbed correctly:
+
+  - `search` returned **exactly 10** results for a broad query, confirming
+    `SEARCH_LIMIT` against the live cap rather than against the changelog.
+  - Every result mapped cleanly: `spotify:track:` URI, non-empty title and
+    artist, positive duration. The multi-artist join and the `- Remastered
+    2011` title suffixes came through as Spotify sends them, unmangled.
+  - `playback()` with nothing playing returned **204**, mapping to `None`
+    rather than erroring. This is the ordinary state of a quiet room and the
+    conductor will see it constantly.
+  - `transfer()` failed with the by-name error it was written to give: *no
+    Spotify Connect device named "SESH"*. Correct until librespot arrives in
+    Phase 6 — the point of the assertion is that it never degrades into a bare
+    404 that reads like a bug.
+  - Refresh worked from a cold start with no cached access token, so the stored
+    refresh token and both scopes are good.
+
+  **Still unrun: `enqueue` and `skip`.** They are behind `SESH_LIVE_MUTATE=1`
+  because they change what the house account is playing, and a routine test run
+  must not interrupt music in the room. Both need an **active Connect device**,
+  which does not exist until Phase 6, so today they can only return Spotify's
+  no-active-device error. Run them once librespot is up:
+
+  ```text
+  SESH_LIVE_MUTATE=1 cargo test --test spotify_live -- --ignored --nocapture
+  ```
+
+  Phase 4 must therefore treat "no active device" as an expected, recoverable
+  state rather than a fault — the exact shape of that error is unconfirmed, so
+  the conductor should degrade on any `enqueue`/`skip` failure rather than
+  matching on its text.
 
 ## Phase 4 — The conductor
 
