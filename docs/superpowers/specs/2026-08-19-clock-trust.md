@@ -58,6 +58,13 @@ last_alive_ms`: the upper bound sits below the lower bound, in the same payload.
 On a reboot after an evening with an app left running, this is guaranteed rather
 than a race.
 
+> **Corrected 2026-08-19 by the Task 7 boot.** It is not guaranteed. `timesyncd`
+> restores a clock file it rewrites constantly, so after a *clean* shutdown the
+> restored time is at or after the last event and the bound survives — measured
+> at `+172,195 ms`. Inverting it needs an unclean stop between that file's last
+> save and the event. The row is still marked, which is the behaviour that
+> matters. See `docs/arc2-clock-trust-verification.md`.
+
 The log is append-only. A row like that cannot be corrected later, only
 explained.
 
