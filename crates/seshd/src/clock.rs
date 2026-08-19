@@ -20,7 +20,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// The file `systemd-timesyncd` creates the first time it successfully syncs.
 pub const SYNCED_MARKER: &str = "/run/systemd/timesync/synchronized";
@@ -157,6 +157,54 @@ impl Clock for TestClock {
     }
 }
 
+/// How long startup will wait for the wall clock to become trustworthy.
+///
+/// Measured on TatePi the gap from `seshd` starting to NTP answering was 9.2s,
+/// so ten covers the observed case with a little room. It is a ceiling and not
+/// a requirement: on timeout startup proceeds, and whatever it writes carries
+/// the `clock_synced: false` mark. Late is better than wrong; marked-but-wrong
+/// is better than a room that will not start.
+pub const CLOCK_WAIT: Duration = Duration::from_secs(10);
+
+/// Poll interval while waiting. Short enough not to add visible latency to the
+/// common case, where the marker is already there and this returns at once.
+pub const CLOCK_POLL: Duration = Duration::from_millis(250);
+
+/// Give the wall clock a bounded chance to become trustworthy before startup
+/// records anything.
+///
+/// This is the **only** place in SESH that waits on the clock. Nothing is bound
+/// yet, no phone can be talking to it, and the room is not usable regardless,
+/// so this delays no one. Handlers never wait: an unsynced clock marks what it
+/// writes and never refuses to write it.
+/// `timeout` and `poll` are arguments rather than constants so a test can drive
+/// this in milliseconds instead of sitting out the real ceiling. `main` passes
+/// [`CLOCK_WAIT`] and [`CLOCK_POLL`].
+pub async fn wait_for_sync(clock: &dyn Clock, timeout: Duration, poll: Duration) {
+    if clock.synced() {
+        return;
+    }
+
+    tracing::warn!(
+        ?timeout,
+        "the clock has not been set from a time source yet; waiting before reconciling"
+    );
+
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        tokio::time::sleep(poll).await;
+        if clock.synced() {
+            tracing::info!("the clock is set; reconciling against it");
+            return;
+        }
+    }
+
+    tracing::warn!(
+        waited = ?timeout,
+        "the clock is still unset; rows written now are marked as such"
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -244,6 +292,78 @@ mod tests {
         clock.advance(250);
         assert_eq!(clock.now_ms(), 1_000_250);
         assert_eq!(clock.mono_ms(), 250);
+    }
+
+    /// A clock that becomes trustworthy on the `after`-th time it is asked.
+    /// Deterministic where a background task racing the waiter would not be.
+    struct SyncsAfter {
+        asked: std::sync::atomic::AtomicUsize,
+        after: usize,
+    }
+
+    impl Clock for SyncsAfter {
+        fn now_ms(&self) -> i64 {
+            0
+        }
+        fn mono_ms(&self) -> i64 {
+            0
+        }
+        fn synced(&self) -> bool {
+            self.asked.fetch_add(1, Ordering::Relaxed) >= self.after
+        }
+    }
+
+    const TEST_TIMEOUT: Duration = Duration::from_millis(400);
+    const TEST_POLL: Duration = Duration::from_millis(10);
+
+    #[tokio::test]
+    async fn waiting_returns_immediately_when_the_clock_is_already_set() {
+        let clock = TestClock::new(0);
+        clock.set_synced(true);
+
+        let started = Instant::now();
+        wait_for_sync(&clock, TEST_TIMEOUT, TEST_POLL).await;
+        assert!(
+            started.elapsed() < TEST_POLL,
+            "the common path must not sleep at all"
+        );
+    }
+
+    #[tokio::test]
+    async fn waiting_ends_as_soon_as_the_clock_is_set() {
+        // Asked once on entry, then once per poll: trusted on the third ask.
+        let clock = SyncsAfter {
+            asked: std::sync::atomic::AtomicUsize::new(0),
+            after: 3,
+        };
+
+        let started = Instant::now();
+        wait_for_sync(&clock, TEST_TIMEOUT, TEST_POLL).await;
+
+        assert!(
+            started.elapsed() < TEST_TIMEOUT,
+            "it must return on the sync, not sit out the ceiling"
+        );
+        assert!(clock.synced(), "and only once the clock really is set");
+    }
+
+    // The Pi with no internet. Startup must still finish — what it writes is
+    // marked, not withheld.
+    #[tokio::test]
+    async fn waiting_gives_up_at_the_ceiling_and_lets_startup_continue() {
+        let clock = TestClock::new(0);
+
+        let started = Instant::now();
+        wait_for_sync(&clock, TEST_TIMEOUT, TEST_POLL).await;
+
+        assert!(
+            started.elapsed() >= TEST_TIMEOUT,
+            "it must wait the full ceiling"
+        );
+        assert!(
+            !clock.synced(),
+            "still untrusted; rows written now get marked"
+        );
     }
 
     #[test]

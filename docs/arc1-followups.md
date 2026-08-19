@@ -145,6 +145,16 @@ Recorded 2026-08-16, from the first real `sudo sh deploy/install.sh` run.
    Same word, opposite direction, because the premise differs: here the log's
    claim is provably stale, there the log's claim is probably still true.
 
+   **The `ts_ms` bound is conditional, and was not when this was written.**
+   `reconcile.rs` says its timestamp is "the upper bound on when the app died".
+   On a Pi with no RTC that is only true once the clock has been set: at a cold
+   boot `seshd` starts before NTP answers — measured at 9.2s, wall clock 13m28s
+   slow — and reconciliation runs inside that window, producing a `ts_ms` below
+   the `last_alive_ms` in its own payload. Startup now waits a bounded ten
+   seconds for the clock, and a row written anyway carries
+   `clock_synced: false`. Check that key before relying on the bound. See
+   `docs/superpowers/specs/2026-08-19-clock-trust.md`.
+
 5. ~~**`install.sh` clobbers a configured `apps.toml`.**~~ **Fixed.**
    The installer used to run `install -Dm644 deploy/apps.toml
    /etc/sesh/apps.toml` unconditionally, so re-running it silently reverted

@@ -347,10 +347,13 @@ mod tests {
         assert_eq!(ids, vec!["sam".to_string(), "marcus".to_string()]);
     }
 
-    // `timesyncd` logs "System clock time unset or jumped backwards, restoring
-    // from recorded timestamp" on this Pi at every boot. A join either side of
-    // a backwards step gets timestamps in the wrong order — but `rowid` records
-    // the sequence exactly, and always did.
+    // The measured boot step on this Pi is forwards, which happens to leave
+    // join order intact. This is the other direction — which `timesyncd`'s own
+    // "time unset or jumped backwards" check exists to handle, and which an NTP
+    // correction of a clock that ran fast produces — and it inverts the order
+    // outright. The point is not which direction was observed: it is that the
+    // order was following a clock at all, when `rowid` records the sequence
+    // exactly and always did.
     #[test]
     fn the_roster_keeps_join_order_across_a_backwards_clock_step() {
         let clock = Arc::new(TestClock::new(1_787_161_900_000));

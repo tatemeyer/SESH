@@ -239,7 +239,7 @@ mod tests {
     use tower::ServiceExt;
 
     async fn joined(app: &axum::Router, state: &AppState, name: &str) -> String {
-        let code = state.join.current(crate::store::now_ms());
+        let code = state.join.current(state.clock.mono_ms());
         let body = serde_json::json!({ "code": code, "name": name }).to_string();
         let response = app
             .clone()
