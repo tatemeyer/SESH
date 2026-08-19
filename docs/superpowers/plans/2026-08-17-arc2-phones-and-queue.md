@@ -495,6 +495,27 @@ network in the test suite.
     neither is an empty list, because a phone showing "no results" for an
     outage sends someone to reboot the router.
 
+  **Mutation tested: 40 mutants, 39 caught.** The first run caught 34 and the
+  six survivors were all genuine gaps, not noise:
+
+  - `Status::set`'s return value only drives a log line, so nothing pinned it.
+    Inverted, the Pi logs "the music source is answering again" on every poll
+    of a healthy source and never logs the transition that matters.
+  - The `REWIND_MS` threshold, both the term and its boundary. Spotify's
+    reported progress jitters between polls; without the threshold any
+    backwards wobble during the pre-push window reads as "the same song started
+    again" and writes a spurious `music.started` into an append-only log every
+    few seconds for the length of the track.
+  - Both identity checks in `claim`. One lets a committed track wrongly claim a
+    *different* song that starts; the other never clears the committed marker,
+    so the conductor believes something is pending forever and every later seek
+    becomes a replay.
+
+  The one survivor left is `replace run_loop with ()`. `run_loop` is the
+  infinite sleep-and-tick wrapper — it never returns, so no test can observe
+  the difference. Contorting the suite to kill it would test tokio's timer,
+  which is precisely what the `tick()` design exists to avoid.
+
   Also worth recording, because the test for it is easy to write wrongly: a
   **pause is not an ending**. Spotify reports it as `Some` with
   `is_playing: false`, and treating that as the track finishing would clear
@@ -550,6 +571,21 @@ network in the test suite.
     legitimate `<img>`. The assertion now names the *injected* element and
     also checks the escaped name survives as text — stricter than what it
     replaced, not weaker.
+  - **A real bug, found by running the binary rather than the suite.** D9 says
+    "seshd already serves `index.html` for unknown paths precisely so the
+    surface owns its routing." It did not. `ServeDir::not_found_service`
+    serves the fallback body and then **forces the status to 404**, so `/join`
+    and `/phone` returned a byte-perfect page under a `404 Not Found`. Arc 1's
+    surface only ever lived at `/`, which `ServeDir` resolves directly, so the
+    fallback had never once been exercised. A browser renders a 404 body
+    without complaint — the phone would have worked in the room while `curl
+    -f`, the boot verification harness, and anything caching by status all
+    disagreed. `ServeDir::fallback` passes the status through;
+    `crates/seshd/tests/surface_routes.rs` pins it, including the case that
+    must still 404, since a missing bundle is a broken install rather than a
+    page. Worth generalising: the Rust suite was green, clippy was clean, and
+    every DOM test passed. Neither layer speaks HTTP, so neither could see it.
+
   - **Still unverified: how any of it looks.** Every test here is a DOM
     assertion. Nothing has confirmed that the strip fits under the grid on a
     real 16:9 TV, that the QR scans at 8vw from couch distance, or that the
