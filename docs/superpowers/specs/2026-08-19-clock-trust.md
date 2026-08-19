@@ -1,7 +1,8 @@
 # SESH — The Clock Cannot Be Trusted at Boot
 
 **Date:** 2026-08-19
-**Status:** Proposed. Needs approval before implementation.
+**Status:** Approved 2026-08-19. The one open question is answered below.
+**Plan:** `docs/superpowers/plans/2026-08-19-clock-trust.md`
 
 ---
 
@@ -169,11 +170,27 @@ To be settled in the plan, but the shape:
 - Anything about time *zones*. This is about whether the instant is known, not
   how it is displayed.
 
-## Open question for approval
+## The question that needed answering, answered 2026-08-19
 
 **Should an unsynced clock block `POST /api/events` and the phone surface, or
-only mark what it writes?** The recommendation above is mark-only: a room that
-refuses to work for the first nine seconds after boot is a worse room, and the
-open ingest port is an architectural invariant. But this is the call that
-decides whether the marker is advisory or load-bearing, and it belongs to Tate
-rather than to the plan.
+only mark what it writes?**
+
+**Mark. Do not block.** Tate's call, and it settles the marker's status: it is a
+*record*, never a gate.
+
+What that rules out, so the plan does not quietly reintroduce it:
+
+- No endpoint returns an error because the clock is unsynced. Not
+  `POST /api/events`, which is an architectural invariant and an open ingest
+  port; not `/api/join`; not the phone surface.
+- No write is deferred waiting for the clock, with **one exception**: startup
+  reconciliation, which has no deadline and no caller waiting on it. That is a
+  bounded wait inside `seshd`'s own startup, not a refusal directed at anybody.
+- Nothing degrades or hides a feature for the first seconds after boot. A room
+  that will not take a song request because a time server has not answered is a
+  worse room than one that takes it and writes down that it was not sure when.
+
+The reasoning is the same one that produced `exit_observed: false` in the
+launch-reconciliation spec, and it is the project's habit rather than a fresh
+judgement: SESH would rather record a measurement it could not make than either
+guess at it or refuse to act.
