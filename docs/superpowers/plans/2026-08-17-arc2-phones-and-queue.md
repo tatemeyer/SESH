@@ -502,28 +502,59 @@ network in the test suite.
 
 ## Phase 5 — Surfaces
 
-- [ ] **5.1 The boot switch** — `main.ts` branches on `location.pathname` (D9).
+- [x] **5.1 The boot switch** — `main.ts` branches on `location.pathname` (D9).
 
-- [ ] **5.2 The join screen** — `/join?c=`: name field, POST, store token, go to
+- [x] **5.2 The join screen** — `/join?c=`: name field, POST, store token, go to
   `/phone`. An already-joined phone skips straight through.
 
-- [ ] **5.3 The phone queue** — search box (debounced, 10 results), tap to
+- [x] **5.3 The phone queue** — search box (debounced, 10 results), tap to
   queue, the pending list with who added each track, a veto button per entry
   showing the tally (`2/3`), and now-playing at the top. Thumb-sized targets;
   this is used standing up in a dark room. Polls `GET /api/music`, and
   heartbeats while the page is visible.
 
-- [ ] **5.4 The TV now-playing card** — a strip under the tile grid: track,
+- [x] **5.4 The TV now-playing card** — a strip under the tile grid: track,
   artist, who queued it, and how many are waiting. Hidden when nothing is
   playing, so a room with no music looks exactly as it does today. Fed by the
   existing WS feed, adding `music.*` to the kinds that trigger `refresh()`.
 
-- [ ] **5.5 The QR** — on the TV home screen, small, in a corner, next to
+- [x] **5.5 The QR** — on the TV home screen, small, in a corner, next to
   "scan to join". `<img src="/api/join/qr.svg">` refreshed on the rotation
   interval.
 
   Tests: `renderHome` with and without now-playing; the phone view's pure
   render given a queue; the veto button's disabled state once you have voted.
+
+  **Built. 57 vitest tests, up from 26.** Files: `route.ts` (the switch),
+  `tv.ts` (the TV controller, moved out of `main.ts` so `main.ts` is only the
+  switch), `phone.ts` (both phone controllers), `views/join.ts`,
+  `views/phone.ts`, and the strip plus QR added to `views/home.ts`.
+
+  Notes worth keeping:
+
+  - **`surfaceFor` lives in its own module.** `main.ts` starts a surface as a
+    side effect of being imported, so testing the routing by importing
+    `main.ts` would boot the TV inside the test runner.
+  - **The phone polls; it does not use the WebSocket.** The feed exists and the
+    TV uses it, but a phone in a pocket with a silently dropped socket showing
+    a stale queue is worse than three seconds of lag. `document.hidden` gates
+    both the poll and the heartbeat, so a pocketed phone stops counting toward
+    the veto denominator — which is the correct answer to "who is in the room".
+  - **`body { overflow: hidden }` had to become `body:has(.home)`.** It was a
+    TV rule written when the TV was the only surface; left alone it made the
+    phone queue unscrollable, which reads as a broken app rather than a long
+    page.
+  - **One existing test changed, deliberately.** `renderHome`'s XSS test
+    asserted `querySelector("img")` was null, which was a valid proxy only
+    while the home screen had no images of its own. The join QR is a
+    legitimate `<img>`. The assertion now names the *injected* element and
+    also checks the escaped name survives as text — stricter than what it
+    replaced, not weaker.
+  - **Still unverified: how any of it looks.** Every test here is a DOM
+    assertion. Nothing has confirmed that the strip fits under the grid on a
+    real 16:9 TV, that the QR scans at 8vw from couch distance, or that the
+    veto buttons are actually thumb-sized in a dark room. That is the Phase 1
+    real-phone check deferred to here, and it needs the hardware.
 
 ## Phase 6 — Audio out
 
