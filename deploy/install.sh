@@ -64,8 +64,15 @@ echo "==> Letting game controllers attach (BlueZ HID)"
 # The tradeoff is deliberate and matches Arc 1's LAN trust model: an unbonded
 # HID device in Bluetooth range can send input. In a living room that is the
 # same threat as someone picking the controller up.
+#
+# Restarting bluetoothd drops every active connection *and* was observed to
+# lose the bond for a paired A2DP speaker outright — `bluetoothctl info` came
+# back `Paired: no` afterwards, and the room's music fell through to the TV.
+# install.sh is meant to be re-runnable, so it must not bounce Bluetooth on a
+# run that changes nothing. Restart only when the file actually changed.
 INPUT_CONF=/etc/bluetooth/input.conf
 if [ -f "$INPUT_CONF" ]; then
+    INPUT_CONF_BEFORE="$(cat "$INPUT_CONF")"
     if grep -qE '^[[:space:]]*ClassicBondedOnly[[:space:]]*=' "$INPUT_CONF"; then
         sed -i 's/^[[:space:]]*ClassicBondedOnly[[:space:]]*=.*/ClassicBondedOnly=false/' "$INPUT_CONF"
     elif grep -qE '^[[:space:]]*#[[:space:]]*ClassicBondedOnly' "$INPUT_CONF"; then
@@ -77,7 +84,11 @@ if [ -f "$INPUT_CONF" ]; then
     else
         printf '\n[General]\nClassicBondedOnly=false\n' >> "$INPUT_CONF"
     fi
-    systemctl restart bluetooth || echo "warning: could not restart bluetooth; reboot to apply."
+    if [ "$INPUT_CONF_BEFORE" = "$(cat "$INPUT_CONF")" ]; then
+        echo "    already set; leaving Bluetooth alone so a paired speaker stays paired"
+    else
+        systemctl restart bluetooth || echo "warning: could not restart bluetooth; reboot to apply."
+    fi
 else
     echo "warning: $INPUT_CONF not found. If a controller pairs but never appears"
     echo "         as an input device, set ClassicBondedOnly=false there by hand."
