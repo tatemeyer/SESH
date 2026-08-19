@@ -170,7 +170,7 @@ Beyond the repo-wide gate in `CLAUDE.md`:
 
   Same for `docs/arc1-followups.md` item 4, which repeats the claim.
 
-- [ ] **Task 7: Verify on hardware**
+- [x] **Task 7: Verify on hardware**
 
   The bug only exists on a cold boot, so the proof has to be one:
 
@@ -281,7 +281,12 @@ about a component in another language in another directory, and it was checkable
 in one file. `docs/arc1-followups.md` already says the kiosk is unsupervised;
 nobody had written down that it is also *impatient*.
 
-### Task 7 — what the reboot must show
+### Task 7 — run and passed, 2026-08-19
+
+Full record, including two corrections to claims this project had written
+down as fact: `docs/arc2-clock-trust-verification.md`.
+
+### Task 7 — what the reboot was told to show
 
 Not yet run; needs a cold boot with an app left running.
 
