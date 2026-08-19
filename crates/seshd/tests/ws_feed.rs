@@ -33,6 +33,7 @@ async fn serve() -> (String, String, Arc<Room>) {
         presence: Arc::new(Presence::new()),
         player: None,
         music: Arc::new(seshd::conductor::Status::new()),
+        clock: Arc::new(seshd::clock::SystemClock::new()),
         join_base: "http://pi.test:7373".into(),
     });
 

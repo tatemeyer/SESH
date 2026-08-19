@@ -14,7 +14,7 @@ use anyhow::{anyhow, Result};
 use rusqlite::Connection;
 use serde::Serialize;
 
-use super::{now_ms, Store};
+use super::Store;
 
 /// Someone the house knows.
 ///
@@ -58,7 +58,7 @@ impl Store {
     /// The id is a slug of `name`, suffixed if that slug is taken.
     pub fn insert_person(&self, name: &str, token: &str) -> Result<Person> {
         let base = slugify(name);
-        let joined_ms = now_ms();
+        let joined_ms = self.clock.now_ms();
         let conn = self.conn.lock().expect("store mutex poisoned");
 
         for attempt in 1..=MAX_ID_ATTEMPTS {
@@ -127,9 +127,13 @@ impl Store {
     /// Everyone the house knows, oldest join first.
     pub fn people(&self) -> Result<Vec<Person>> {
         let conn = self.conn.lock().expect("store mutex poisoned");
-        // Two people can join inside the same millisecond, so `joined_ms`
-        // alone is not a total order. `rowid` breaks the tie by insertion.
-        let sql = format!("SELECT {COLUMNS} FROM people ORDER BY joined_ms ASC, rowid ASC");
+        // `rowid` alone, deliberately. It is the sequence people actually
+        // joined in — a total order, assigned by SQLite, with no clock
+        // involved. `joined_ms` is a measurement of *when*, and on a Pi with no
+        // RTC it can step backwards at boot and invert the order it was being
+        // asked to express. Sorting by a measurement when the sequence is
+        // already recorded was the bug.
+        let sql = format!("SELECT {COLUMNS} FROM people ORDER BY rowid ASC");
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map([], row_to_person)?;
 
@@ -208,7 +212,10 @@ fn column_names(conn: &Connection) -> Result<Vec<String>> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
+    use crate::clock::TestClock;
 
     fn store() -> Store {
         Store::open_in_memory().unwrap()
@@ -338,6 +345,43 @@ mod tests {
 
         let ids: Vec<_> = store.people().unwrap().into_iter().map(|p| p.id).collect();
         assert_eq!(ids, vec!["sam".to_string(), "marcus".to_string()]);
+    }
+
+    // The measured boot step on this Pi is forwards, which happens to leave
+    // join order intact. This is the other direction — which `timesyncd`'s own
+    // "time unset or jumped backwards" check exists to handle, and which an NTP
+    // correction of a clock that ran fast produces — and it inverts the order
+    // outright. The point is not which direction was observed: it is that the
+    // order was following a clock at all, when `rowid` records the sequence
+    // exactly and always did.
+    #[test]
+    fn the_roster_keeps_join_order_across_a_backwards_clock_step() {
+        let clock = Arc::new(TestClock::new(1_787_161_900_000));
+        let store = Store::open_in_memory().unwrap().with_clock(clock.clone());
+
+        store.insert_person("Sam", "t1").unwrap();
+        clock.set_wall_ms(1_787_161_000_000);
+        store.insert_person("Marcus", "t2").unwrap();
+
+        let people = store.people().unwrap();
+        let ids: Vec<_> = people.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["sam", "marcus"],
+            "order must not follow the clock"
+        );
+        assert!(
+            people[1].joined_ms < people[0].joined_ms,
+            "the timestamps really are inverted; the order survives anyway"
+        );
+    }
+
+    #[test]
+    fn joined_ms_comes_from_the_clock() {
+        let clock = Arc::new(TestClock::new(1_787_161_900_000));
+        let store = Store::open_in_memory().unwrap().with_clock(clock);
+        let person = store.insert_person("Sam", "t1").unwrap();
+        assert_eq!(person.joined_ms, 1_787_161_900_000);
     }
 
     #[test]

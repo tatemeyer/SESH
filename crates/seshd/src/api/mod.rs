@@ -19,6 +19,7 @@ use axum::routing::{get, post};
 use axum::Router;
 use tower_http::services::{ServeDir, ServeFile};
 
+use crate::clock::Clock;
 use crate::conductor::Status;
 use crate::join::JoinCodes;
 use crate::launcher::Launcher;
@@ -46,6 +47,12 @@ pub struct AppState {
     pub player: Option<Arc<dyn Player>>,
     /// Whether the music source is answering, as the conductor last saw it.
     pub music: Arc<Status>,
+    /// Time, and whether it can be believed.
+    ///
+    /// Handlers measure elapsed time with [`Clock::mono_ms`], never the wall
+    /// clock: a code's sixty-second life is a duration, and on a Pi with no RTC
+    /// the wall clock steps sideways once per boot.
+    pub clock: Arc<dyn Clock>,
     /// Origin the QR points phones at, e.g. `http://192.168.40.195:7373`.
     ///
     /// It cannot be derived from the request: the TV fetches the QR over
@@ -102,6 +109,7 @@ pub fn router_with_ws(state: AppState) -> Router {
 #[cfg(test)]
 pub(crate) mod testing {
     use super::*;
+    use crate::clock::TestClock;
     use crate::config::AppSpec;
     use crate::launcher::platform::MockPlatform;
     use crate::store::Store;
@@ -114,10 +122,30 @@ pub(crate) mod testing {
         (router, state)
     }
 
+    /// The same fixture, keeping hold of the clock so a test can move it —
+    /// including sideways, the way NTP does once per boot.
+    pub fn app_with_clock() -> (Router, AppState, Arc<TestClock>) {
+        let clock = Arc::new(TestClock::new(1_787_161_000_000));
+        clock.set_synced(true);
+        let (router, state, _player) = build(clock.clone());
+        (router, state, clock)
+    }
+
     /// The same fixture, keeping hold of the mock source so a test can
     /// script what a search returns.
     pub fn app_with_music() -> (Router, AppState, Arc<crate::player::mock::MockPlayer>) {
-        let room = Room::new(Store::open_in_memory().unwrap()).unwrap();
+        let clock = Arc::new(TestClock::new(1_787_161_000_000));
+        clock.set_synced(true);
+        build(clock)
+    }
+
+    fn build(clock: Arc<TestClock>) -> (Router, AppState, Arc<crate::player::mock::MockPlayer>) {
+        let room = Room::new(
+            Store::open_in_memory()
+                .unwrap()
+                .with_clock(clock.clone() as Arc<dyn Clock>),
+        )
+        .unwrap();
         let launcher = Launcher::new(
             vec![AppSpec {
                 id: "kodi".into(),
@@ -137,6 +165,7 @@ pub(crate) mod testing {
             presence: Arc::new(Presence::new()),
             player: Some(player.clone()),
             music: Arc::new(Status::new()),
+            clock: clock as Arc<dyn Clock>,
             join_base: "http://pi.test:7373".into(),
         };
         (router(state.clone()), state, player)

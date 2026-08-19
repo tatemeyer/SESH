@@ -12,13 +12,15 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use reqwest::{Method, StatusCode};
 use serde::Deserialize;
 use serde_json::Value;
 use tokio::sync::Mutex;
 
-use crate::store::now_ms;
+use crate::clock::{Clock, SystemClock};
 
 use super::auth::{self, StoredTokens};
 use super::{Playback, Player, Track};
@@ -90,6 +92,9 @@ impl Default for Endpoints {
 struct Tokens {
     refresh: String,
     access: Option<String>,
+    /// Monotonic milliseconds, not wall time. An access token's life is a
+    /// duration; measuring it against a clock that steps sideways at boot
+    /// would have the room believe a fresh token was already stale.
     expires_at_ms: i64,
 }
 
@@ -103,6 +108,7 @@ pub struct SpotifyPlayer {
     // refreshes, so a blocking mutex here would be a deadlock waiting to
     // happen and would not compile under clippy's await_holding_lock.
     tokens: Mutex<Tokens>,
+    clock: Arc<dyn Clock>,
 }
 
 impl SpotifyPlayer {
@@ -132,7 +138,14 @@ impl SpotifyPlayer {
                 access: None,
                 expires_at_ms: 0,
             }),
+            clock: Arc::new(SystemClock::new()),
         }
+    }
+
+    /// Use `clock` instead of the real one. For tests.
+    pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
+        self.clock = clock;
+        self
     }
 
     /// Point this player at different hosts. For tests.
@@ -151,7 +164,7 @@ impl SpotifyPlayer {
     async fn access_token(&self) -> Result<String> {
         let mut tokens = self.tokens.lock().await;
         if let Some(token) = &tokens.access {
-            if now_ms() < tokens.expires_at_ms {
+            if self.clock.mono_ms() < tokens.expires_at_ms {
                 return Ok(token.clone());
             }
         }
@@ -167,7 +180,8 @@ impl SpotifyPlayer {
         .context("refreshing the Spotify access token")?;
 
         tokens.access = Some(access.token.clone());
-        tokens.expires_at_ms = now_ms() + (access.expires_in_s - EXPIRY_SKEW_S).max(0) * 1_000;
+        tokens.expires_at_ms =
+            self.clock.mono_ms() + (access.expires_in_s - EXPIRY_SKEW_S).max(0) * 1_000;
 
         // Spotify occasionally rotates the refresh token. Missing this would
         // work for an hour and then lock the room out until someone

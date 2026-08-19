@@ -17,9 +17,9 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
+use crate::clock::Clock;
 use crate::event::{kind, NewEvent};
 use crate::room::Room;
-use crate::store::now_ms;
 
 /// How long a phone may go quiet before its owner is considered gone.
 ///
@@ -118,12 +118,17 @@ pub const SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(6
 ///
 /// Shaped like `Launcher::reap_loop`: the timing lives in the library next to
 /// the logic it drives, so `main` stays a wiring file.
-pub async fn sweep_loop(presence: Arc<Presence>, room: Arc<Room>) {
+///
+/// Times from [`Clock::mono_ms`]. [`WINDOW_MS`] is a duration, and a wall clock
+/// that steps forward further than ten minutes — which is every cold boot on a
+/// Pi with no RTC — would retire every phone in the room at once and write a
+/// `presence.left` for each of them.
+pub async fn sweep_loop(presence: Arc<Presence>, room: Arc<Room>, clock: Arc<dyn Clock>) {
     let mut ticker = tokio::time::interval(SWEEP_INTERVAL);
     loop {
         ticker.tick().await;
 
-        for departure in presence.sweep(now_ms()) {
+        for departure in presence.sweep(clock.mono_ms()) {
             let who = departure.actors.first().cloned().unwrap_or_default();
             let Err(error) = room.record(departure) else {
                 continue;
@@ -135,7 +140,7 @@ pub async fn sweep_loop(presence: Arc<Presence>, room: Arc<Room>) {
             // departure is lost for good, since a second sweep will not
             // re-emit a transition it believes it already made. They are
             // retired again one window later if they really have gone.
-            let _ = presence.beat(&who, now_ms());
+            let _ = presence.beat(&who, clock.mono_ms());
         }
     }
 }

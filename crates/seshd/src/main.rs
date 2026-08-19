@@ -7,6 +7,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use clap::Parser;
 use seshd::api::{router_with_ws, surface_service, AppState};
+use seshd::clock::{self, Clock, SystemClock};
 use seshd::conductor::{self, Conductor, Status};
 use seshd::config::{detect_lan_ip, load_apps_file};
 use seshd::join::JoinCodes;
@@ -18,7 +19,7 @@ use seshd::player::Player;
 use seshd::presence::{self, Presence};
 use seshd::reconcile::close_unfinished_launches;
 use seshd::room::Room;
-use seshd::store::{now_ms, Store};
+use seshd::store::Store;
 
 /// The SESH room daemon.
 #[derive(Debug, Parser)]
@@ -109,7 +110,7 @@ async fn authorise_spotify(args: &Args) -> Result<()> {
 /// still keeps a queue; the vision's rule is that every subsystem degrades to
 /// *the room still plays media*, and refusing to boot over a missing music
 /// token would break that at the first hurdle.
-fn build_player(args: &Args) -> Option<Arc<dyn Player>> {
+fn build_player(args: &Args, clock: Arc<dyn Clock>) -> Option<Arc<dyn Player>> {
     let token_path = args.spotify_token_path();
     if !args.spotify_config.exists() || !token_path.exists() {
         tracing::info!(
@@ -122,6 +123,7 @@ fn build_player(args: &Args) -> Option<Arc<dyn Player>> {
 
     match load_spotify_config(&args.spotify_config)
         .and_then(|config| SpotifyPlayer::new(config, token_path))
+        .map(|player| player.with_clock(clock))
     {
         Ok(player) => Some(Arc::new(player)),
         Err(error) => {
@@ -176,8 +178,20 @@ async fn main() -> Result<()> {
         return authorise_spotify(&args).await;
     }
 
-    let store = Store::open(&args.db).with_context(|| format!("opening {}", args.db.display()))?;
+    let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
+
+    let store = Store::open(&args.db)
+        .with_context(|| format!("opening {}", args.db.display()))?
+        .with_clock(clock.clone());
     let room = Room::new(store)?;
+
+    // This Pi has no battery-backed clock, so at a cold boot `seshd` starts in
+    // the gap between `timesyncd` restoring the last shutdown's timestamp and
+    // NTP answering — measured at 9.2s, with the wall clock 13m28s slow.
+    // Reconciliation is the one write with no caller and no deadline, so it is
+    // the one thing that can afford to wait rather than record an instant it
+    // would have to qualify.
+    clock::wait_for_sync(clock.as_ref(), clock::CLOCK_WAIT, clock::CLOCK_POLL).await;
 
     // Before anything can read the log, close launches a previous run left
     // open. Restarting `seshd` kills the apps it launched, so their exits were
@@ -201,12 +215,16 @@ async fn main() -> Result<()> {
     // are here, and without this their first heartbeat after a restart would
     // announce an arrival for someone who never left — one spurious row in the
     // log per person per restart, forever.
-    let presence = Arc::new(Presence::seeded(&room.roster(), now_ms()));
-    tokio::spawn(presence::sweep_loop(presence.clone(), room.clone()));
+    let presence = Arc::new(Presence::seeded(&room.roster(), clock.mono_ms()));
+    tokio::spawn(presence::sweep_loop(
+        presence.clone(),
+        room.clone(),
+        clock.clone(),
+    ));
 
     // Music, if this box has been given the credentials for it.
     let music = Arc::new(Status::new());
-    let player = build_player(&args);
+    let player = build_player(&args, clock.clone());
     if let Some(player) = player.clone() {
         let conductor = Conductor::new(room.clone(), player, music.clone());
 
@@ -239,6 +257,7 @@ async fn main() -> Result<()> {
         presence,
         player,
         music,
+        clock: clock.clone(),
         join_base,
     })
     .fallback_service(surface);

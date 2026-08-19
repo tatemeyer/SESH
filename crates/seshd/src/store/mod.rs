@@ -15,11 +15,13 @@ mod events;
 mod people;
 
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 use rusqlite::Connection;
+
+use crate::clock::{Clock, SystemClock};
 
 pub use people::Person;
 
@@ -45,6 +47,9 @@ CREATE TABLE IF NOT EXISTS people (
 /// The event log and the identity registry, backed by SQLite.
 pub struct Store {
     conn: Mutex<Connection>,
+    /// Every timestamp SESH writes comes from here, so there is one place that
+    /// knows whether the wall clock could be trusted when a row was written.
+    clock: Arc<dyn Clock>,
 }
 
 impl Store {
@@ -67,7 +72,15 @@ impl Store {
         people::migrate(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
+            clock: Arc::new(SystemClock::new()),
         })
+    }
+
+    /// Use `clock` instead of the real one. For tests, which need to reproduce
+    /// the boot window without rebooting.
+    pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
+        self.clock = clock;
+        self
     }
 }
 

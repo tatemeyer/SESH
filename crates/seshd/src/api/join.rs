@@ -13,7 +13,7 @@ use qrcode::QrCode;
 use serde::{Deserialize, Serialize};
 
 use crate::event::{kind, NewEvent};
-use crate::store::{now_ms, Person};
+use crate::store::Person;
 
 use super::auth::Authenticated;
 use super::AppState;
@@ -44,7 +44,7 @@ pub struct JoinResponse {
 
 /// `GET /api/join/qr.svg` — the code the TV displays.
 pub async fn join_qr(State(state): State<AppState>) -> Response {
-    let code = state.join.current(now_ms());
+    let code = state.join.current(state.clock.mono_ms());
     let url = format!("{}/join?c={}", state.join_base, code);
 
     let svg = match QrCode::new(url.as_bytes()) {
@@ -84,7 +84,7 @@ pub async fn join(
     // A refusal, not a missing thing: the code was wrong, expired, or already
     // spent, and the phone's remedy is the same in all three cases — rescan.
     // Which of the three it was is deliberately not disclosed.
-    if !state.join.redeem(&request.code, now_ms()) {
+    if !state.join.redeem(&request.code, state.clock.mono_ms()) {
         return Err(StatusCode::FORBIDDEN);
     }
 
@@ -128,7 +128,7 @@ pub async fn heartbeat(
     State(state): State<AppState>,
     Authenticated(person): Authenticated,
 ) -> Result<StatusCode, StatusCode> {
-    if let Some(arrival) = state.presence.beat(&person.id, now_ms()) {
+    if let Some(arrival) = state.presence.beat(&person.id, state.clock.mono_ms()) {
         state.room.record(arrival).map_err(|error| {
             tracing::error!(%error, "recording presence.arrived failed");
             StatusCode::INTERNAL_SERVER_ERROR
@@ -141,11 +141,12 @@ pub async fn heartbeat(
 mod tests {
     use super::*;
     use crate::api::testing::*;
+    use crate::clock::Clock;
     use tower::ServiceExt;
 
     /// Join a fresh room and return the token handed back.
     async fn join_as(app: &axum::Router, state: &AppState, name: &str) -> String {
-        let code = state.join.current(now_ms());
+        let code = state.join.current(state.clock.mono_ms());
         let body = serde_json::json!({ "code": code, "name": name }).to_string();
         let response = app
             .clone()
@@ -154,6 +155,42 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::CREATED);
         json(response).await["token"].as_str().unwrap().to_string()
+    }
+
+    // The measured failure. `seshd` comes up ~9s before NTP answers, and when
+    // it answers the wall clock leaps 13m28s in one step — past ROTATE_MS and
+    // its grace at once. A guest halfway through scanning the TV gets an
+    // expired code for something neither they nor the room did.
+    #[tokio::test]
+    async fn an_ntp_step_does_not_expire_the_code_on_the_tv() {
+        let (app, state, clock) = app_with_clock();
+        let code = state.join.current(state.clock.mono_ms());
+
+        // A second of real time passes while they scan; then NTP lands.
+        clock.advance(1_000);
+        clock.set_wall_ms(clock.now_ms() + 13 * 60 * 1000 + 28_000);
+
+        let body = serde_json::json!({ "code": code, "name": "Marcus" }).to_string();
+        let response = app
+            .oneshot(post_json("/api/join", &body, None))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.status(),
+            StatusCode::CREATED,
+            "a code one second old must still be good"
+        );
+    }
+
+    // Rotation is a duration and must keep working when nothing else does.
+    #[tokio::test]
+    async fn the_code_still_rotates_on_monotonic_time() {
+        let (_app, state, clock) = app_with_clock();
+        let first = state.join.current(state.clock.mono_ms());
+        clock.advance(crate::join::ROTATE_MS);
+        let second = state.join.current(state.clock.mono_ms());
+        assert_ne!(first, second, "a minute of real time must still rotate it");
     }
 
     #[tokio::test]
@@ -179,7 +216,7 @@ mod tests {
     #[tokio::test]
     async fn joining_with_a_valid_code_creates_a_person_and_returns_a_token() {
         let (app, state) = app();
-        let code = state.join.current(now_ms());
+        let code = state.join.current(state.clock.mono_ms());
         let body = serde_json::json!({ "code": code, "name": "Marcus" }).to_string();
 
         let response = app
@@ -234,7 +271,7 @@ mod tests {
     #[tokio::test]
     async fn a_code_cannot_be_spent_twice() {
         let (app, state) = app();
-        let code = state.join.current(now_ms());
+        let code = state.join.current(state.clock.mono_ms());
         let body = serde_json::json!({ "code": code, "name": "Marcus" }).to_string();
 
         let first = app
@@ -259,7 +296,7 @@ mod tests {
     #[tokio::test]
     async fn a_blank_name_is_rejected_without_burning_the_code() {
         let (app, _state) = app();
-        let code = _state.join.current(now_ms());
+        let code = _state.join.current(_state.clock.mono_ms());
         let body = serde_json::json!({ "code": code, "name": "   " }).to_string();
 
         let response = app
@@ -282,7 +319,7 @@ mod tests {
     #[tokio::test]
     async fn an_over_long_name_is_rejected() {
         let (app, state) = app();
-        let code = state.join.current(now_ms());
+        let code = state.join.current(state.clock.mono_ms());
         let name = "a".repeat(MAX_NAME_LEN + 1);
         let body = serde_json::json!({ "code": code, "name": name }).to_string();
 
