@@ -264,6 +264,38 @@ impl SpotifyPlayer {
         bail!("Spotify {method} {path} did not succeed in {MAX_ATTEMPTS} attempts")
     }
 
+    /// The room's Connect device, or `None` if it is not there.
+    ///
+    /// `play` and `enqueue` name a device explicitly, because otherwise Spotify
+    /// acts on whatever device the house account last used — which on a shared
+    /// account is somebody's phone, and a room whose queue plays into a pocket
+    /// two streets away is not a room.
+    ///
+    /// Falling back rather than failing: with librespot down there is no room
+    /// audio at all, and refusing to play would turn a silent speaker into a
+    /// broken queue. The warning names the cause.
+    async fn room_device(&self) -> Option<String> {
+        match self.device_id().await {
+            Ok(id) => Some(id),
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "no room device; playing on whatever device is active instead"
+                );
+                None
+            }
+        }
+    }
+
+    /// `device_id` query parameter for the room, empty when there is no room
+    /// device to name.
+    async fn room_query(&self) -> Vec<(&'static str, String)> {
+        match self.room_device().await {
+            Some(id) => vec![("device_id", id)],
+            None => Vec::new(),
+        }
+    }
+
     /// The Connect device id matching the configured device name.
     async fn device_id(&self) -> Result<String> {
         let devices = self
@@ -370,13 +402,10 @@ impl Player for SpotifyPlayer {
     }
 
     async fn enqueue(&self, uri: &str) -> Result<()> {
-        self.call(
-            Method::POST,
-            "/me/player/queue",
-            &[("uri", uri.to_string())],
-            None,
-        )
-        .await?;
+        let mut query = vec![("uri", uri.to_string())];
+        query.extend(self.room_query().await);
+        self.call(Method::POST, "/me/player/queue", &query, None)
+            .await?;
         Ok(())
     }
 
@@ -387,7 +416,7 @@ impl Player for SpotifyPlayer {
         self.call(
             Method::PUT,
             "/me/player/play",
-            &[],
+            &self.room_query().await,
             Some(serde_json::json!({ "uris": [uri] })),
         )
         .await?;
