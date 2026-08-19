@@ -6,13 +6,28 @@
 
 use anyhow::Result;
 
-use super::{now_ms, Store};
+use super::Store;
+use crate::clock::CLOCK_SYNCED;
 use crate::event::{Event, NewEvent};
 
 impl Store {
     /// Append an event and return it with its assigned id and timestamp.
-    pub fn append(&self, new: NewEvent) -> Result<Event> {
-        let ts_ms = now_ms();
+    pub fn append(&self, mut new: NewEvent) -> Result<Event> {
+        let ts_ms = self.clock.now_ms();
+
+        // A row stamped from a clock that has not been corrected yet says so,
+        // in the payload, next to the claim it qualifies. Applied here because
+        // this is already the only place that stamps time, so no caller can
+        // forget it. Added, never overwritten: a caller that has answered the
+        // question owns the answer.
+        if !self.clock.synced() {
+            if let Some(object) = new.payload.as_object_mut() {
+                object
+                    .entry(CLOCK_SYNCED)
+                    .or_insert_with(|| serde_json::Value::Bool(false));
+            }
+        }
+
         let actors = serde_json::to_string(&new.actors)?;
         let payload = serde_json::to_string(&new.payload)?;
 
@@ -79,7 +94,105 @@ impl Store {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
+    use crate::clock::{TestClock, CLOCK_SYNCED};
+
+    /// A store whose clock the test drives. Returns both so the test can move
+    /// the clock after the store is built.
+    fn store_with_clock(wall_ms: i64) -> (Store, Arc<TestClock>) {
+        let clock = Arc::new(TestClock::new(wall_ms));
+        let store = Store::open_in_memory().unwrap().with_clock(clock.clone());
+        (store, clock)
+    }
+
+    #[test]
+    fn the_timestamp_comes_from_the_clock() {
+        let (store, _clock) = store_with_clock(1_787_161_000_000);
+        let written = store.append(NewEvent::new("a")).unwrap();
+        assert_eq!(written.ts_ms, 1_787_161_000_000);
+    }
+
+    // The ordinary case. A healthy box's rows must stay byte-identical to what
+    // they were before any of this existed, so the marker's presence is itself
+    // the signal.
+    #[test]
+    fn a_trusted_clock_leaves_the_payload_untouched() {
+        let (store, clock) = store_with_clock(1_787_161_000_000);
+        clock.set_synced(true);
+
+        let written = store.append(NewEvent::new("a")).unwrap();
+        assert_eq!(written.payload, serde_json::json!({}));
+    }
+
+    #[test]
+    fn an_untrusted_clock_marks_the_row() {
+        let (store, _clock) = store_with_clock(1_787_161_000_000);
+        let written = store.append(NewEvent::new("a")).unwrap();
+        assert_eq!(written.payload[CLOCK_SYNCED], false);
+    }
+
+    #[test]
+    fn the_mark_sits_alongside_whatever_the_caller_recorded() {
+        let (store, _clock) = store_with_clock(1_787_161_000_000);
+        let written = store
+            .append(NewEvent::new("app.exited").payload(serde_json::json!({
+                "exit_observed": false,
+                "last_alive_ms": 1_787_161_900_000i64,
+            })))
+            .unwrap();
+
+        assert_eq!(written.payload[CLOCK_SYNCED], false);
+        assert_eq!(written.payload["exit_observed"], false);
+        assert_eq!(written.payload["last_alive_ms"], 1_787_161_900_000i64);
+    }
+
+    #[test]
+    fn the_mark_survives_a_round_trip_through_the_database() {
+        let (store, _clock) = store_with_clock(1_787_161_000_000);
+        store.append(NewEvent::new("a")).unwrap();
+
+        let read = store.read_since(0, -1).unwrap();
+        assert_eq!(read[0].payload[CLOCK_SYNCED], false);
+    }
+
+    // Once the clock is trusted the marking stops, within one store's lifetime.
+    #[test]
+    fn rows_written_after_the_clock_syncs_are_unmarked() {
+        let (store, clock) = store_with_clock(1_787_161_000_000);
+        let before = store.append(NewEvent::new("before")).unwrap();
+
+        clock.set_synced(true);
+        clock.set_wall_ms(1_787_161_808_000);
+        let after = store.append(NewEvent::new("after")).unwrap();
+
+        assert_eq!(before.payload[CLOCK_SYNCED], false);
+        assert_eq!(after.payload, serde_json::json!({}));
+        assert_eq!(after.ts_ms, 1_787_161_808_000);
+    }
+
+    // A caller that has already answered the question owns the answer. The
+    // store adds; it never overwrites.
+    #[test]
+    fn the_store_does_not_clobber_a_mark_the_caller_set() {
+        let (store, _clock) = store_with_clock(1_787_161_000_000);
+        let written = store
+            .append(NewEvent::new("a").payload(serde_json::json!({ CLOCK_SYNCED: true })))
+            .unwrap();
+        assert_eq!(written.payload[CLOCK_SYNCED], true);
+    }
+
+    // `NewEvent::payload` takes any Value. Nothing in SESH sets a non-object
+    // today, but the store must not panic if something does.
+    #[test]
+    fn a_payload_that_is_not_an_object_is_left_as_it_is() {
+        let (store, _clock) = store_with_clock(1_787_161_000_000);
+        let written = store
+            .append(NewEvent::new("a").payload(serde_json::json!("just a string")))
+            .unwrap();
+        assert_eq!(written.payload, serde_json::json!("just a string"));
+    }
 
     #[test]
     fn append_assigns_increasing_ids_and_a_timestamp() {
