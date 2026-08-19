@@ -186,3 +186,66 @@ describe("renderPhone", () => {
     expect(el.textContent).toContain("Unknown track");
   });
 });
+
+describe("the search box across redraws", () => {
+  // Typing one character fires a debounced search, which draws twice — once
+  // for the spinner and once for the results — and the 3s poll draws again on
+  // top. Rebuilding the input on any of those takes the caret and, on a phone,
+  // closes the keyboard mid-word.
+  it("keeps the very same input element alive", () => {
+    const root = document.createElement("div");
+    renderPhone(root, state());
+    const first = root.querySelector<HTMLInputElement>(".search__input")!;
+    expect(first).not.toBeNull();
+
+    renderPhone(root, state());
+    const second = root.querySelector<HTMLInputElement>(".search__input")!;
+    expect(second).toBe(first);
+  });
+
+  it("keeps focus and what has been typed so far", () => {
+    const root = document.createElement("div");
+    document.body.append(root);
+    renderPhone(root, state());
+
+    const input = root.querySelector<HTMLInputElement>(".search__input")!;
+    input.focus();
+    input.value = "drinkin";
+    input.setSelectionRange(4, 4);
+
+    // A poll lands mid-word.
+    renderPhone(root, { ...state(), searching: true });
+
+    expect(document.activeElement).toBe(input);
+    expect(input.value).toBe("drinkin");
+    expect(input.selectionStart).toBe(4);
+    root.remove();
+  });
+
+  // The one time the box *should* be cleared is when a track has been added:
+  // the controller empties `query`, and the box has to follow.
+  it("clears when the state clears the query", () => {
+    const root = document.createElement("div");
+    renderPhone(root, { ...state(), query: "drinkin" });
+    const input = root.querySelector<HTMLInputElement>(".search__input")!;
+    expect(input.value).toBe("drinkin");
+
+    renderPhone(root, { ...state(), query: "" });
+    expect(input.value).toBe("");
+  });
+
+  it("still redraws everything else", () => {
+    const root = document.createElement("div");
+    renderPhone(root, state());
+    expect(root.textContent).toContain("Nothing playing");
+
+    renderPhone(root, {
+      ...state(),
+      music: music({
+        now_playing: entry({ title: "Drinkin' Problem", artist: "Midland" }),
+      }),
+    });
+    expect(root.textContent).toContain("Drinkin' Problem");
+    expect(root.textContent).not.toContain("Nothing playing");
+  });
+});

@@ -116,40 +116,97 @@ function results(state: PhoneState): string {
   return `<ul class="results">${rows}</ul>`;
 }
 
-/** Render the phone screen into `root`, replacing its contents. */
+/** Render the phone screen into `root`.
+ *
+ * **The search box is built once and never rebuilt.** Every redraw used to
+ * replace the whole subtree, and a phone redraws constantly: the 3s poll, plus
+ * two draws per keystroke from the debounced search. Recreating the `<input>`
+ * takes the caret with it and, on a phone, closes the keyboard — so a search
+ * longer than one debounce was impossible to type.
+ *
+ * Refocusing afterwards is not a fix. A soft keyboard opens on a user gesture;
+ * once the element it belonged to is gone, calling `focus()` on the replacement
+ * does not bring it back on iOS. The element has to survive, so everything that
+ * changes lives in sibling containers around it.
+ */
 export function renderPhone(root: HTMLElement, state: PhoneState): void {
   if (state.music === null) {
-    root.innerHTML = `<main class="phone"><p class="loading">Loading…</p></main>`;
+    root.innerHTML = `<main class="phone"><p class="loading">Loading\u2026</p></main>`;
     return;
   }
+
+  const shell = ensureShell(root);
 
   // The source being down is worth saying out loud. Without it, tracks pile up
   // in a queue that plays nothing and the phone looks broken.
   const offline =
     state.music.player === "offline"
-      ? `<p class="banner banner--warn">Music source offline — tracks will still queue.</p>`
+      ? `<p class="banner banner--warn">Music source offline \u2014 tracks will still queue.</p>`
       : "";
 
   const notice = state.notice
     ? `<p class="banner banner--error">${escapeHtml(state.notice)}</p>`
     : "";
 
-  root.innerHTML = `<main class="phone">
+  shell.me.textContent = state.me?.name ?? "";
+  shell.banners.innerHTML = `${offline}${notice}`;
+  shell.now.innerHTML = nowPlaying(state.music, state.me);
+  shell.results.innerHTML = results(state);
+  shell.queue.innerHTML = pending(state.music, state.me);
+
+  // While the box has focus it owns its own value — writing to it would move
+  // the caret to the end mid-word, which is the same bug in a quieter form.
+  // Unfocused, state wins: that is the first render, and the controller
+  // clearing `query` after a track is added.
+  const typing = shell.search.ownerDocument.activeElement === shell.search;
+  if (!typing && shell.search.value !== state.query) {
+    shell.search.value = state.query;
+  }
+}
+
+/** The parts of the phone screen that get rewritten, resolved once. */
+interface Shell {
+  me: HTMLElement;
+  banners: HTMLElement;
+  now: HTMLElement;
+  search: HTMLInputElement;
+  results: HTMLElement;
+  queue: HTMLElement;
+}
+
+/** Build the phone's markup if it is not there yet, and return its parts. */
+function ensureShell(root: HTMLElement): Shell {
+  if (root.querySelector(".search__input") === null) {
+    root.innerHTML = `<main class="phone">
     <header class="phone__head">
       <span class="wordmark">SESH</span>
-      <span class="phone__me">${escapeHtml(state.me?.name ?? "")}</span>
+      <span class="phone__me"></span>
     </header>
-    ${offline}
-    ${notice}
-    ${nowPlaying(state.music, state.me)}
+    <div class="phone__banners"></div>
+    <div class="phone__now"></div>
     <form class="search" autocomplete="off">
-      <input class="search__input" name="q" type="search" placeholder="Search for a song"
-        value="${escapeHtml(state.query)}" />
+      <input class="search__input" name="q" type="search" placeholder="Search for a song" />
     </form>
-    ${results(state)}
+    <div class="phone__results"></div>
     <section class="queue__section">
       <h2 class="queue__title">Up next</h2>
-      ${pending(state.music, state.me)}
+      <div class="phone__queue"></div>
     </section>
   </main>`;
+  }
+
+  const pick = <T extends HTMLElement>(selector: string): T => {
+    const found = root.querySelector<T>(selector);
+    if (found === null) throw new Error(`phone shell is missing ${selector}`);
+    return found;
+  };
+
+  return {
+    me: pick(".phone__me"),
+    banners: pick(".phone__banners"),
+    now: pick(".phone__now"),
+    search: pick<HTMLInputElement>(".search__input"),
+    results: pick(".phone__results"),
+    queue: pick(".phone__queue"),
+  };
 }

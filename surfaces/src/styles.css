@@ -129,6 +129,18 @@ body:has(.home) { overflow: hidden; }
   gap: 1rem;
 }
 
+/* Targets for the phone's partial redraws, not layout.
+   `.phone` is a flex column with a gap, so a plain wrapper would become a flex
+   item and an *empty* one — no banner, no results — would still take a 1rem
+   gap. `display: contents` keeps the children as the flex items they were
+   before the search box was made to survive redraws. */
+.phone__banners,
+.phone__now,
+.phone__results,
+.phone__queue {
+  display: contents;
+}
+
 .phone__head {
   display: flex;
   justify-content: space-between;
