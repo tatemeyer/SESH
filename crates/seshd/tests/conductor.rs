@@ -567,3 +567,117 @@ async fn a_failed_hand_over_is_retried_on_the_next_pass() {
         "a hand-over that failed must not be remembered as done"
     );
 }
+
+// ------------------------------------------- gaps found by mutation testing
+//
+// Every test below exists because `cargo mutants` broke the conductor in a
+// specific way and the suite above stayed green. None of them are hypothetical
+// — each names a way the room misbehaves.
+
+// Spotify's reported progress jitters between polls. Without the REWIND_MS
+// threshold, any backwards wobble during the pre-push window reads as "the
+// same song started again" and writes a spurious `music.started` into an
+// append-only log, every few seconds, for the length of the track.
+#[tokio::test]
+async fn a_small_backwards_jitter_is_not_a_replay() {
+    let f = fixture();
+    f.queue("spotify:track:a", "A", "sam");
+    f.queue("spotify:track:b", "B", "marcus");
+
+    f.speaker("spotify:track:a", 0);
+    f.conductor.tick().await;
+    f.speaker("spotify:track:a", 209_000);
+    f.conductor.tick().await;
+    assert_eq!(f.player.enqueued().len(), 1, "B should be committed by now");
+
+    // Backwards, but only slightly: this is jitter, not a new track.
+    f.speaker("spotify:track:a", 208_500);
+    f.conductor.tick().await;
+
+    assert_eq!(
+        f.events(kind::MUSIC_STARTED).len(),
+        1,
+        "a half-second wobble is not a second play"
+    );
+}
+
+// The boundary itself. A jump of exactly REWIND_MS is still not a replay —
+// the threshold is the smallest jump that counts, not the largest that does
+// not.
+#[tokio::test]
+async fn a_backwards_jump_of_exactly_the_threshold_is_not_a_replay() {
+    let f = fixture();
+    f.queue("spotify:track:a", "A", "sam");
+    f.queue("spotify:track:b", "B", "marcus");
+
+    f.speaker("spotify:track:a", 0);
+    f.conductor.tick().await;
+    f.speaker("spotify:track:a", 209_000);
+    f.conductor.tick().await;
+
+    f.speaker("spotify:track:a", 209_000 - 10_000);
+    f.conductor.tick().await;
+
+    assert_eq!(f.events(kind::MUSIC_STARTED).len(), 1);
+}
+
+// A committed track is not a licence to mislabel whatever plays next. If
+// somebody starts something else in the Spotify app while B is sitting in
+// Spotify's queue, the log must record what is actually on the speaker — and
+// B must stay in SESH's queue, because Spotify is still going to play it.
+#[tokio::test]
+async fn a_pushed_track_does_not_claim_a_different_song_that_starts() {
+    let f = fixture();
+    f.queue("spotify:track:a", "A", "sam");
+    let committed = f.queue("spotify:track:b", "B", "marcus");
+
+    f.speaker("spotify:track:a", 0);
+    f.conductor.tick().await;
+    f.speaker("spotify:track:a", 209_000);
+    f.conductor.tick().await;
+    assert_eq!(f.player.enqueued(), vec!["spotify:track:b".to_string()]);
+
+    // Someone picks something else entirely in the Spotify app.
+    f.speaker("spotify:track:elsewhere", 1_000);
+    f.conductor.tick().await;
+
+    let playing = f.playing().expect("must reflect reality");
+    assert_eq!(playing.uri, "spotify:track:elsewhere");
+    assert_eq!(
+        playing.added_by, None,
+        "nobody in the room queued what is playing"
+    );
+    assert_eq!(
+        f.room.queue().pending().len(),
+        1,
+        "B is still committed to Spotify and must stay in the queue"
+    );
+    assert_eq!(f.room.queue().pending()[0].entry, committed);
+}
+
+// Once a handed-over track is playing it is no longer pending, and forgetting
+// to say so leaves the conductor permanently believing something is committed.
+// The visible symptom is that every later backwards seek becomes a replay.
+#[tokio::test]
+async fn a_track_that_starts_stops_counting_as_committed() {
+    let f = fixture();
+    f.queue("spotify:track:a", "A", "sam");
+
+    // Cold start: this is the path that marks A as handed over.
+    f.conductor.tick().await;
+    assert_eq!(f.player.played(), vec!["spotify:track:a".to_string()]);
+
+    f.speaker("spotify:track:a", 120_000);
+    f.conductor.tick().await;
+    assert_eq!(f.events(kind::MUSIC_STARTED).len(), 1);
+
+    // A long way backwards. With A no longer committed this is a seek.
+    f.speaker("spotify:track:a", 3_000);
+    f.conductor.tick().await;
+
+    assert_eq!(
+        f.events(kind::MUSIC_STARTED).len(),
+        1,
+        "A stopped being committed the moment it started playing"
+    );
+}

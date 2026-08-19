@@ -13,8 +13,11 @@ pub mod ws;
 
 use std::sync::Arc;
 
+use std::path::Path;
+
 use axum::routing::{get, post};
 use axum::Router;
+use tower_http::services::{ServeDir, ServeFile};
 
 use crate::conductor::Status;
 use crate::join::JoinCodes;
@@ -70,6 +73,19 @@ pub fn router(state: AppState) -> Router {
         .route("/api/music/veto", post(music::veto_track))
         .route("/api/music/search", get(music::search_tracks))
         .with_state(state)
+}
+
+/// Serve the built surface bundle, with unknown paths falling back to
+/// `index.html` so the surface owns its own routing (D9).
+///
+/// `fallback` rather than `not_found_service`, and the difference is the whole
+/// point: `not_found_service` serves the body but forces the status to **404**.
+/// A browser renders that anyway, so `/join` and `/phone` would have limped
+/// along looking fine while every status-code check — including the boot
+/// verification harness — called the surface broken.
+pub fn surface_service(static_dir: &Path) -> ServeDir<ServeFile> {
+    let index = static_dir.join("index.html");
+    ServeDir::new(static_dir).fallback(ServeFile::new(index))
 }
 
 /// The API router plus the live event feed. `router` alone is kept for

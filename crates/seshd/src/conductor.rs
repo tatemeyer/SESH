@@ -311,3 +311,27 @@ pub async fn run_loop(conductor: Arc<Conductor>) {
         tokio::time::sleep(wait).await;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // `set` returns whether anything changed, and that return value only ever
+    // drives a log line — so nothing in the integration suite pins it. Invert
+    // it and the Pi logs "the music source is answering again" on every poll
+    // of a healthy source, while the one message that matters, the transition
+    // to unreachable, never appears.
+    #[test]
+    fn a_status_reports_transitions_rather_than_state() {
+        let status = Status::new();
+        assert!(!status.is_online(), "unknown reads as offline");
+
+        assert!(status.set(true), "offline -> online is a change");
+        assert!(!status.set(true), "online -> online is not");
+        assert!(status.is_online());
+
+        assert!(status.set(false), "online -> offline is a change");
+        assert!(!status.set(false), "offline -> offline is not");
+        assert_eq!(status.label(), "offline");
+    }
+}

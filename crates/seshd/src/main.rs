@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use seshd::api::{router_with_ws, AppState};
+use seshd::api::{router_with_ws, surface_service, AppState};
 use seshd::conductor::{self, Conductor, Status};
 use seshd::config::{detect_lan_ip, load_apps_file};
 use seshd::join::JoinCodes;
@@ -19,7 +19,6 @@ use seshd::presence::{self, Presence};
 use seshd::reconcile::close_unfinished_launches;
 use seshd::room::Room;
 use seshd::store::{now_ms, Store};
-use tower_http::services::{ServeDir, ServeFile};
 
 /// The SESH room daemon.
 #[derive(Debug, Parser)]
@@ -231,8 +230,7 @@ async fn main() -> Result<()> {
 
     // Anything not under /api or /ws falls through to the surface bundle,
     // and unknown paths serve index.html so the surface owns its routing.
-    let index = args.r#static.join("index.html");
-    let surface = ServeDir::new(&args.r#static).not_found_service(ServeFile::new(index));
+    let surface = surface_service(&args.r#static);
 
     let app = router_with_ws(AppState {
         room,
