@@ -326,6 +326,18 @@ the sink and pauses the source, then `audio.sink_found` and resumes when
 Bluetooth comes back. Making the room *react* to that — dimming lights, showing
 "now spinning" — is a later arc reading events that are already in the log.
 
+### Re-running install.sh does not unpair the speaker
+
+It used to. `install.sh` sets `ClassicBondedOnly=false` in
+`/etc/bluetooth/input.conf` so game controllers can attach, and it restarted
+`bluetoothd` unconditionally afterwards — including on runs where the file
+already said that and nothing changed. Restarting bluetoothd drops live
+connections, and on this Pi it lost the A2DP bond outright: `bluetoothctl info`
+reported `Paired: no` and the music fell through to the TV mid-song.
+
+It now restarts only when the file actually changed. If you ever do need to
+bounce Bluetooth by hand, expect to re-run `sesh-pair-speaker` afterwards.
+
 ### If the speaker will not work
 
 Bluetooth audio on a Pi is the least reliable thing in this system, which is why
