@@ -1,0 +1,40 @@
+# How SESH joins the Parallax platform.
+#
+# Read by `parallax-baseline`, which aggregates every registered
+# project's work, verification, artifacts, and agent sessions into one
+# view. See github.com/tatemeyer/parallax.
+#
+# `root:` is deliberately absent: the registry knows where this clone
+# actually is, and a checked-in absolute path would be wrong on every
+# machine but one — this one is built on the Pi and developed elsewhere,
+# so that matters more here than most.
+apiVersion: parallax/v1
+project:
+  name: sesh
+  language: rust
+  methodology: methodology-first     # informational only; nothing branches on it
+work:
+  adapter: github
+  repo: tatemeyer/SESH
+  # No autonomy_map: this repository does not label work by autonomy
+  # tier. An empty map is legitimate — the project simply does not use
+  # them yet — and is honest, where declaring labels nothing carries
+  # would not be.
+verification:
+  - kind: lint
+    adapter: command
+    command: cargo clippy --all-targets -- -D warnings
+  - kind: tests
+    adapter: command
+    command: cargo test
+  - kind: format
+    adapter: command
+    command: cargo fmt --check
+  # The surface half of the gate. `npm test` and `npm run build` both
+  # run in `surfaces/`, and the gate treats them as one check because
+  # they fail for the same reason: the browser bundle is broken.
+  - kind: surfaces
+    adapter: command
+    command: cd surfaces && npm test && npm run build
+sessions:
+  watch: .claude/worktrees/*
