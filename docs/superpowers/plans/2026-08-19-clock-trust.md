@@ -110,7 +110,8 @@ Beyond the repo-wide gate in `CLAUDE.md`:
   Tests: two people inserted while unsynced, then a third after sync, still list
   in join order.
 
-- [x] **Task 4: Startup reconciliation waits, briefly**
+- [x] **Task 4: Startup reconciliation waits, briefly** — ***reverted; see the
+  verification record. Startup does not wait. The premise was wrong.***
 
   In `main.rs`, immediately before `close_unfinished_launches` (currently line
   186, after `Room::new` and before the listener binds): if the clock is not
@@ -238,16 +239,65 @@ covered by unit tests at every layer — `wait_for_sync`'s ceiling, the store's
 marking, and the reconciliation contradiction — but only Task 7 exercises it on
 real hardware.
 
+### Task 4 reverted, 2026-08-19, before it ever ran a boot
+
+The wait was justified in this plan as "the one write with no deadline… nothing
+is bound, no phone can be talking to it, and the room is not usable regardless,
+so this delays no one."
+
+**All of that is false, and reading `~/.config/labwc/autostart` on the Pi is
+what showed it.** The kiosk is not started by `seshd`; labwc starts it, and
+before pointing Chromium at the room it polls for `seshd`:
+
+```sh
+i=0
+while [ "$i" -lt 50 ]; do
+    if curl -sf http://127.0.0.1:7373/api/apps >/dev/null 2>&1; then break; fi
+    i=$((i + 1)); sleep 0.2
+done
+```
+
+Timed as written on this Pi, that budget is **10.48s**. `seshd` binds **0.69s**
+after starting. A ten-second wait puts the bind at **10.69s** — past the budget,
+so Chromium loads a connection-refused page. That is the black screen PR #4
+exists to prevent, reintroduced by a data-quality fix.
+
+It would have fired on every cold boot measured, because `seshd` starts before
+NTP answers every time: 43.2s vs 64.0s on one boot, 136.0s vs 145.2s on the
+other.
+
+**And a smaller ceiling would not rescue it.** The two measured gaps between
+`seshd` starting and NTP landing are 9.2s and 20.8s. Any wait short enough to be
+safe inside a 10.48s budget would expire before the clock arrives on most boots,
+mark the row, and have bought nothing but risk.
+
+So the wait is gone, along with `wait_for_sync`, `CLOCK_WAIT`, `CLOCK_POLL` and
+their tests. The mark does the whole job — which is what the spec said in the
+first place, and the exception carved out for reconciliation should not have
+been carved.
+
+**The lesson worth keeping:** "nothing is waiting on this" was an assumption
+about a component in another language in another directory, and it was checkable
+in one file. `docs/arc1-followups.md` already says the kiosk is unsupervised;
+nobody had written down that it is also *impatient*.
+
 ### Task 7 — what the reboot must show
 
 Not yet run; needs a cold boot with an app left running.
 
-Expected, given the 9.2s measurement: `seshd`'s log shows the clock warning,
-then `the clock is set; reconciling against it`, and the reconciliation
-`app.exited` carries **no** mark with `ts_ms >= last_alive_ms`. If NTP takes
-longer than ten seconds instead, the row carries `clock_synced: false` and that
-is also a pass. The failure — the one thing that must not appear — is an
-unmarked row whose `ts_ms` is below its own `last_alive_ms`.
+With the wait removed, reconciliation now runs ~0.7s after `seshd` starts, which
+on every boot measured is well before NTP answers. So the expected result is the
+**marked** one: an `app.exited` carrying `clock_synced: false`, with `ts_ms`
+likely below its own `last_alive_ms` — the contradiction, admitted.
+
+An unmarked row with `ts_ms >= last_alive_ms` is also a pass; it just means NTP
+beat `seshd` to the punch on that boot. The one thing that must never appear is
+an unmarked row whose `ts_ms` is below its own `last_alive_ms`.
+
+Second thing the reboot must show, now that Task 4 has taught it: **the TV comes
+up.** `verify.sh` already proves the kiosk loaded and ran by way of an
+established WebSocket, and now also records `seshd`'s start-to-bind against the
+autostart's 10.48s budget.
 
 ## Not solved here
 
