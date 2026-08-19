@@ -7,7 +7,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use clap::Parser;
 use seshd::api::{router_with_ws, surface_service, AppState};
-use seshd::clock::{self, Clock, SystemClock};
+use seshd::clock::{Clock, SystemClock};
 use seshd::conductor::{self, Conductor, Status};
 use seshd::config::{detect_lan_ip, load_apps_file};
 use seshd::join::JoinCodes;
@@ -185,13 +185,9 @@ async fn main() -> Result<()> {
         .with_clock(clock.clone());
     let room = Room::new(store)?;
 
-    // This Pi has no battery-backed clock, so at a cold boot `seshd` starts in
-    // the gap between `timesyncd` restoring the last shutdown's timestamp and
-    // NTP answering — measured at 9.2s, with the wall clock 13m28s slow.
-    // Reconciliation is the one write with no caller and no deadline, so it is
-    // the one thing that can afford to wait rather than record an instant it
-    // would have to qualify.
-    clock::wait_for_sync(clock.as_ref(), clock::CLOCK_WAIT, clock::CLOCK_POLL).await;
+    // Nothing here waits for the clock, deliberately — see `clock`'s module
+    // doc. Reconciliation runs against whatever the clock says and its row is
+    // marked when that could not be trusted.
 
     // Before anything can read the log, close launches a previous run left
     // open. Restarting `seshd` kills the apps it launched, so their exits were
