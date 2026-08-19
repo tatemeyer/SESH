@@ -31,6 +31,10 @@ struct Stub {
     rotate_refresh: AtomicUsize,
     searches: std::sync::Mutex<Vec<Value>>,
     transfers: std::sync::Mutex<Vec<Value>>,
+    /// Non-zero hides the room's device, as a box with librespot down would.
+    hide_room_device: AtomicUsize,
+    /// Raw query string of every play and queue call.
+    targeted: std::sync::Mutex<Vec<String>>,
 }
 
 type Shared = Arc<Stub>;
@@ -102,11 +106,32 @@ async fn devices(State(stub): State<Shared>) -> Response {
     if let Some(failure) = scripted_failure(&stub) {
         return failure;
     }
+    if stub.hide_room_device.load(Ordering::SeqCst) > 0 {
+        return Json(json!({ "devices": [
+            { "id": "other-id", "name": "Someone's Phone" }
+        ]}))
+        .into_response();
+    }
     Json(json!({ "devices": [
         { "id": "other-id", "name": "Someone's Phone" },
         { "id": "sesh-device-id", "name": "SESH" }
     ]}))
     .into_response()
+}
+
+/// Records the query it was called with, then answers like Spotify does.
+async fn record_target(
+    State(stub): State<Shared>,
+    axum::extract::RawQuery(query): axum::extract::RawQuery,
+) -> Response {
+    if let Some(failure) = scripted_failure(&stub) {
+        return failure;
+    }
+    stub.targeted
+        .lock()
+        .unwrap()
+        .push(query.unwrap_or_default());
+    StatusCode::NO_CONTENT.into_response()
 }
 
 async fn transfer(State(stub): State<Shared>, Json(body): Json<Value>) -> Response {
@@ -138,7 +163,8 @@ async fn serve(nothing_playing: bool) -> (Shared, SpotifyPlayer, tempfile::TempD
         .route("/api/token", post(token))
         .route("/v1/me/player", player_route)
         .route("/v1/me/player/devices", get(devices))
-        .route("/v1/me/player/queue", post(no_content))
+        .route("/v1/me/player/queue", post(record_target))
+        .route("/v1/me/player/play", axum::routing::put(record_target))
         .route("/v1/me/player/next", post(no_content))
         .route("/v1/search", get(search))
         .with_state(stub.clone());
@@ -366,5 +392,51 @@ async fn a_rotated_refresh_token_is_written_back_to_disk() {
     assert!(
         saved.contains("rotated-refresh"),
         "the rotated token was not persisted: {saved}"
+    );
+}
+
+// Without naming a device, Spotify acts on whatever the house account last
+// used. On a shared account that is somebody's phone, and a room whose queue
+// plays into a pocket two streets away is not a room.
+#[tokio::test]
+async fn play_and_enqueue_name_the_room_device() {
+    let (stub, player, _dir) = serve(true).await;
+
+    player.play("spotify:track:a").await.unwrap();
+    player.enqueue("spotify:track:b").await.unwrap();
+
+    let targeted = stub.targeted.lock().unwrap().clone();
+    assert_eq!(targeted.len(), 2);
+    assert!(
+        targeted[0].contains("device_id=sesh-device-id"),
+        "play must name the room: {:?}",
+        targeted[0]
+    );
+    assert!(
+        targeted[1].contains("device_id=sesh-device-id"),
+        "enqueue must name the room: {:?}",
+        targeted[1]
+    );
+    assert!(
+        targeted[1].contains("uri=spotify"),
+        "and still send the uri"
+    );
+}
+
+// librespot down is a silent speaker, not a broken queue. Falling back to the
+// active device keeps the room usable and the warning names the cause.
+#[tokio::test]
+async fn a_missing_room_device_falls_back_rather_than_failing() {
+    let (stub, player, _dir) = serve(true).await;
+    stub.hide_room_device.store(1, Ordering::SeqCst);
+
+    player.play("spotify:track:a").await.unwrap();
+
+    let targeted = stub.targeted.lock().unwrap().clone();
+    assert_eq!(targeted.len(), 1);
+    assert!(
+        !targeted[0].contains("device_id"),
+        "with no room device it must name none: {:?}",
+        targeted[0]
     );
 }

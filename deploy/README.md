@@ -261,6 +261,36 @@ debugging the wrong layer. `install.sh` masks the packaged unit and installs
 `--name SESH` must match `device_name` in `/etc/sesh/spotify.toml`. If they
 disagree, `transfer` correctly reports that it cannot find the room's device.
 
+### Claim the room device once, by hand
+
+**This step is not optional and nothing on the Pi can do it for you.**
+
+librespot advertises itself over zeroconf, which makes it visible to Spotify
+clients on the LAN — but *not* to the Web API. Until a Spotify client selects it
+once, `GET /me/player/devices` does not list it at all, and `seshd` has no room
+device to play to. Measured on this box: `avahi-browse -rt _spotify-connect._tcp`
+showed `SESH` while the Web API listed only a phone and a desktop.
+
+So, once, on any device signed in to the **house account**:
+
+1. Open Spotify.
+2. Play anything.
+3. Devices → pick **SESH**.
+
+That hands librespot the credentials, which `--system-cache` then keeps at
+`~/.local/share/sesh/librespot`, so the claim survives reboots. Check it took:
+
+```sh
+curl -s http://127.0.0.1:7373/api/music     # the room device should be in play
+journalctl --user -u sesh-librespot | grep -i credential
+```
+
+If music plays on someone's phone rather than in the room, this is why: `play`
+and `enqueue` name the room's device when they can find it and fall back to
+whatever is active when they cannot, warning as they go. A silent speaker is
+better than a broken queue — but a queue playing into a pocket two streets away
+is neither.
+
 ### The vinyl handoff
 
 The Victrola is a record player *and* the speaker, and those are the same input.

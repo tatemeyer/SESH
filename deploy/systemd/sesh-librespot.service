@@ -18,11 +18,17 @@ Type=simple
 #
 # --name must match `device_name` in /etc/sesh/spotify.toml, or `transfer` will
 # correctly report that it cannot find the room's device.
+# --system-cache persists the credentials the one-time claim hands over. Without
+# it librespot comes back after every reboot as an unclaimed zeroconf device,
+# invisible to the Web API, and somebody has to re-pick SESH in a Spotify client
+# before the room can play anything. --disable-audio-cache keeps the audio
+# itself off the SD card; only credentials and volume are kept.
 ExecStart=/usr/bin/librespot \
   --name SESH \
   --backend pulseaudio \
   --bitrate 320 \
   --device-type speaker \
+  --system-cache %h/.local/share/sesh/librespot \
   --disable-audio-cache
 
 # Where the music comes out. pair-speaker.sh writes a drop-in setting this to
