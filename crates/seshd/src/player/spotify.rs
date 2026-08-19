@@ -220,6 +220,17 @@ impl SpotifyPlayer {
                 .query(query);
             if let Some(body) = &body {
                 request = request.json(body);
+            } else if method != Method::GET {
+                // Spotify's edge answers 411 Length Required to a POST or PUT
+                // with no Content-Length, and reqwest omits the header entirely
+                // for a bodyless request. That silently broke every call that
+                // sends nothing: enqueue, skip, pause, resume — including D7's
+                // pre-push, which had therefore never once worked against the
+                // real API. reqwest omits the header even for a zero-length
+                // body, so it has to be set by hand.
+                request = request
+                    .header(reqwest::header::CONTENT_LENGTH, "0")
+                    .body(Vec::new());
             }
 
             let response = request

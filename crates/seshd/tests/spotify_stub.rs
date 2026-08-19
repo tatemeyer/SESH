@@ -35,6 +35,8 @@ struct Stub {
     hide_room_device: AtomicUsize,
     /// Raw query string of every play and queue call.
     targeted: std::sync::Mutex<Vec<String>>,
+    /// Whether each bodyless call carried a Content-Length.
+    lengths: std::sync::Mutex<Vec<Option<String>>>,
 }
 
 type Shared = Arc<Stub>;
@@ -142,11 +144,22 @@ async fn transfer(State(stub): State<Shared>, Json(body): Json<Value>) -> Respon
     StatusCode::NO_CONTENT.into_response()
 }
 
-async fn no_content(State(stub): State<Shared>) -> Response {
-    match scripted_failure(&stub) {
-        Some(failure) => failure,
-        None => StatusCode::NO_CONTENT.into_response(),
+/// Records whether the request carried a Content-Length, then answers.
+///
+/// Spotify's edge is stricter than a naive stub: it answers 411 to a POST or
+/// PUT without one, and reqwest omits the header for a bodyless request. A stub
+/// that does not look is a stub that lets that ship.
+async fn record_length(State(stub): State<Shared>, headers: axum::http::HeaderMap) -> Response {
+    if let Some(failure) = scripted_failure(&stub) {
+        return failure;
     }
+    stub.lengths.lock().unwrap().push(
+        headers
+            .get(axum::http::header::CONTENT_LENGTH)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string),
+    );
+    StatusCode::NO_CONTENT.into_response()
 }
 
 /// Start a stub and a player pointed at it.
@@ -165,7 +178,8 @@ async fn serve(nothing_playing: bool) -> (Shared, SpotifyPlayer, tempfile::TempD
         .route("/v1/me/player/devices", get(devices))
         .route("/v1/me/player/queue", post(record_target))
         .route("/v1/me/player/play", axum::routing::put(record_target))
-        .route("/v1/me/player/next", post(no_content))
+        .route("/v1/me/player/next", post(record_length))
+        .route("/v1/me/player/pause", axum::routing::put(record_length))
         .route("/v1/search", get(search))
         .with_state(stub.clone());
 
@@ -439,4 +453,26 @@ async fn a_missing_room_device_falls_back_rather_than_failing() {
         "with no room device it must name none: {:?}",
         targeted[0]
     );
+}
+
+// Spotify answers 411 Length Required to a POST or PUT with no Content-Length,
+// and reqwest omits the header entirely for a bodyless request. Observed live:
+// every pre-push in a real evening failed, so D7's seamless handoff had never
+// worked against the real API — only the fallback to `play` kept music going.
+#[tokio::test]
+async fn calls_without_a_json_body_still_carry_a_content_length() {
+    let (stub, player, _dir) = serve(true).await;
+
+    player.skip().await.unwrap();
+    player.pause().await.unwrap();
+
+    let lengths = stub.lengths.lock().unwrap().clone();
+    assert_eq!(lengths.len(), 2, "both calls should have reached the stub");
+    for (call, length) in ["skip", "pause"].iter().zip(&lengths) {
+        assert_eq!(
+            length.as_deref(),
+            Some("0"),
+            "{call} must send Content-Length: 0, or Spotify answers 411"
+        );
+    }
 }
