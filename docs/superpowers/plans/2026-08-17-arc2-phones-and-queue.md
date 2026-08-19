@@ -594,7 +594,7 @@ network in the test suite.
 
 ## Phase 6 — Audio out
 
-- [ ] **6.1 Pair the Victrola**
+- [ ] **6.1 Pair the Victrola** — *needs the device in pairing mode; `sesh-pair-speaker` does the rest*
 
   Put it in Bluetooth pairing mode, `bluetoothctl` pair/trust/connect, confirm
   an A2DP sink appears in `pactl list short sinks`, confirm it survives a
@@ -602,7 +602,7 @@ network in the test suite.
   auto-reconnect. BlueZ 5.66 and PipeWire's full bluez5 codec set (SBC, AAC,
   aptX, LDAC) are already present on this Pi — checked.
 
-- [ ] **6.2 librespot as a user unit**
+- [x] **6.2 librespot as a user unit**
 
   Neither `librespot` nor `raspotify` is in the Pi OS archive — checked — so
   raspotify comes from its Cloudsmith repo, the same shape of problem as
@@ -614,7 +614,7 @@ network in the test suite.
   `deploy/systemd/sesh-librespot.service` as a **user** unit alongside `seshd`,
   and mask the packaged system unit.
 
-- [ ] **6.3 Route music to the speaker, game audio to the TV**
+- [x] **6.3 Route music to the speaker, game audio to the TV**
 
   The default sink stays HDMI, so Kodi, RetroArch and Moonlight are untouched.
   Only librespot is redirected, via `PULSE_SINK` in the user unit. The sink name
@@ -624,13 +624,13 @@ network in the test suite.
   If the speaker is absent, `PULSE_SINK` falls through to HDMI — music plays on
   the TV instead of nowhere, which is the right degradation.
 
-- [ ] **6.4 Watch the connection**
+- [x] **6.4 Watch the connection**
 
   A monitor recording `audio.sink_lost` / `audio.sink_found`, pausing the queue
   on loss and resuming on return. This is the vinyl signal (see above); this
   arc only records it.
 
-- [ ] **6.5 `install.sh`**
+- [x] **6.5 `install.sh`**
 
   raspotify repo and package, the user unit, the packaged system unit masked,
   the `spotify.toml` template — and it must be **re-runnable**, honouring the

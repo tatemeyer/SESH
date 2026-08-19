@@ -31,6 +31,10 @@ pub enum Call {
     Skip,
     /// Playback was moved to the room's device.
     Transfer,
+    /// Playback was stopped without losing its place.
+    Pause,
+    /// Playback was carried on from where it stopped.
+    Resume,
 }
 
 #[derive(Debug, Default)]
@@ -180,6 +184,14 @@ impl Player for MockPlayer {
 
     async fn transfer(&self) -> Result<()> {
         self.record(Call::Transfer)
+    }
+
+    async fn pause(&self) -> Result<()> {
+        self.record(Call::Pause)
+    }
+
+    async fn resume(&self) -> Result<()> {
+        self.record(Call::Resume)
     }
 }
 

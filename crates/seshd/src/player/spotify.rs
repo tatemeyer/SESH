@@ -400,6 +400,19 @@ impl Player for SpotifyPlayer {
         Ok(())
     }
 
+    async fn pause(&self) -> Result<()> {
+        self.call(Method::PUT, "/me/player/pause", &[], None)
+            .await?;
+        Ok(())
+    }
+
+    async fn resume(&self) -> Result<()> {
+        // No body: an empty resume continues the current track rather than
+        // restarting it or wandering into a context nobody chose.
+        self.call(Method::PUT, "/me/player/play", &[], None).await?;
+        Ok(())
+    }
+
     async fn transfer(&self) -> Result<()> {
         let device = self.device_id().await?;
         self.call(

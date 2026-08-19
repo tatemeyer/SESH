@@ -64,3 +64,16 @@ fi
     --check-for-update-interval=31536000 \
     --autoplay-policy=no-user-gesture-required \
     http://127.0.0.1:7373 &
+
+# Music output, started last and deliberately after the kiosk.
+#
+# `systemctl --user start` returns as soon as the process is spawned, so this
+# cannot delay anything — but the kiosk's patience above is a fixed 10.48s
+# budget that a slow start would eat into, and PR #18 is the record of what
+# happens when something is put in front of it. Nothing goes before Chromium
+# that does not have to.
+#
+# librespot advertises a Spotify Connect device named SESH; seshd moves
+# playback onto it over the Web API. With no speaker paired its PULSE_SINK is
+# unset and the music comes out of the TV.
+systemctl --user start sesh-librespot.service 2>/dev/null || true
