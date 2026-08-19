@@ -7,6 +7,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use clap::Parser;
 use seshd::api::{router_with_ws, surface_service, AppState};
+use seshd::audio::{self, PactlSinks};
 use seshd::clock::{Clock, SystemClock};
 use seshd::conductor::{self, Conductor, Status};
 use seshd::config::{detect_lan_ip, load_apps_file};
@@ -238,6 +239,16 @@ async fn main() -> Result<()> {
 
         tokio::spawn(conductor::run_loop(conductor));
     }
+
+    // Watch the speaker. Runs whether or not there is a source to pause: the
+    // log should say when the room's speaker came and went even on a box with
+    // no Spotify credentials, because that is the vinyl signal.
+    tokio::spawn(audio::watch_loop(
+        Arc::new(PactlSinks),
+        room.clone(),
+        player.clone(),
+        audio::BLUETOOTH_PREFIX.to_string(),
+    ));
 
     let join_base = join_base(&args);
     tracing::info!(%join_base, "phones will be sent here by the join QR");

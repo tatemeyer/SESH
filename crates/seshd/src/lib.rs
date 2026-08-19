@@ -4,6 +4,7 @@
 #![warn(missing_docs)]
 
 pub mod api;
+pub mod audio;
 pub mod clock;
 pub mod conductor;
 pub mod config;

@@ -104,6 +104,15 @@ pub mod kind {
     pub const MUSIC_STARTED: &str = "music.started";
     /// A track ended or was dropped. `payload.why` says which.
     pub const MUSIC_SKIPPED: &str = "music.skipped";
+
+    /// The room's Bluetooth speaker appeared. `subject` is the sink name.
+    pub const AUDIO_SINK_FOUND: &str = "audio.sink_found";
+    /// The room's Bluetooth speaker went away. `subject` is the sink name.
+    ///
+    /// On a Victrola this is also the vinyl handoff signal: switching the unit
+    /// to phono drops the A2DP link, so "the speaker left" and "someone put a
+    /// record on" are the same event.
+    pub const AUDIO_SINK_LOST: &str = "audio.sink_lost";
 }
 
 #[cfg(test)]

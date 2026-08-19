@@ -83,6 +83,35 @@ else
     echo "         as an input device, set ClassicBondedOnly=false there by hand."
 fi
 
+echo "==> Installing librespot (Spotify Connect endpoint for the room)"
+# Neither librespot nor raspotify is in the Raspberry Pi OS archive, so the
+# package comes from the project's own Cloudsmith repo — the same shape of
+# problem as moonlight-qt, but this one has an installable source.
+#
+# Not fatal if it fails. Without librespot the queue still fills, the veto
+# still works, and the log still records the night; only the sound goes away.
+# A room that boots without music beats an installer that refuses to finish.
+if ! command -v librespot >/dev/null 2>&1; then
+    if [ ! -f /etc/apt/sources.list.d/raspotify.list ]; then
+        curl -sSL https://dtcooper.github.io/raspotify/key.asc \
+            | gpg --dearmor -o /usr/share/keyrings/raspotify_key.gpg 2>/dev/null || true
+        chmod 644 /usr/share/keyrings/raspotify_key.gpg 2>/dev/null || true
+        echo 'deb [signed-by=/usr/share/keyrings/raspotify_key.gpg] https://dtcooper.github.io/raspotify raspotify main' \
+            > /etc/apt/sources.list.d/raspotify.list
+        apt-get update || true
+    fi
+    apt-get install -y raspotify || echo "warning: raspotify install failed; music will have no output device."
+fi
+
+# The packaged unit is a *system* service running as its own user, which cannot
+# reach the login session's PipeWire and therefore cannot see the Bluetooth
+# sink at all. Left enabled it competes with ours and plays to nothing, which
+# looks exactly like a broken speaker. SESH ships a user unit instead.
+if systemctl list-unit-files raspotify.service >/dev/null 2>&1; then
+    systemctl disable --now raspotify.service 2>/dev/null || true
+    systemctl mask raspotify.service 2>/dev/null || true
+fi
+
 echo "==> Adding $SESH_USER to the groups the compositor needs"
 usermod -aG video,input,render,audio "$SESH_USER"
 loginctl enable-linger "$SESH_USER"
@@ -123,6 +152,14 @@ SESH_HOME="$(getent passwd "$SESH_USER" | cut -d: -f6)"
 [ -n "$SESH_HOME" ] || fail "could not resolve home directory for $SESH_USER"
 
 install -Dm644 deploy/seshd.service "${SESH_HOME}/.config/systemd/user/seshd.service"
+install -Dm644 deploy/systemd/sesh-librespot.service \
+    "${SESH_HOME}/.config/systemd/user/sesh-librespot.service"
+install -Dm755 deploy/pair-speaker.sh /usr/local/bin/sesh-pair-speaker
+
+# The speaker drop-in is configuration written by pair-speaker.sh and names a
+# MAC this script cannot know. Never write it, never remove it — the same rule
+# as apps.toml, and wiping it would present as "music moved back to the TV" on
+# an upgrade with nothing on screen explaining why.
 install -Dm644 deploy/labwc/rc.xml "${SESH_HOME}/.config/labwc/rc.xml"
 install -Dm755 deploy/labwc/autostart "${SESH_HOME}/.config/labwc/autostart"
 mkdir -p "${SESH_HOME}/.local/share/sesh"
@@ -196,7 +233,9 @@ else
 fi
 echo "  2. Confirm each command resolves: which kodi retroarch moonlight-qt"
 if [ "$SPOTIFY_TOML_KEPT" = yes ]; then
-    echo "  3. Kept your existing /etc/sesh/spotify.toml. This release's template"
+    echo "  3. Pair the room speaker, if you have not:  sesh-pair-speaker"
+echo "     Without one, music comes out of the TV, which is the fallback."
+echo "  4. Kept your existing /etc/sesh/spotify.toml. This release's template"
     echo "     is at /etc/sesh/spotify.toml.dist if you want to diff it."
 else
     echo "  3. For music: put the house account's client id and secret in"

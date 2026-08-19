@@ -1,0 +1,41 @@
+[Unit]
+# A Spotify Connect endpoint for the room, so `transfer` has somewhere to go.
+#
+# A **user** unit, deliberately, and this is the trap in Phase 6. Raspotify
+# ships a *system* unit running as its own `raspotify` user, which cannot reach
+# this login session's PipeWire and so cannot see the Bluetooth sink at all —
+# it would play to nothing and look like a broken speaker. install.sh masks the
+# packaged unit for that reason.
+Description=SESH Spotify Connect endpoint (librespot)
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+# Zeroconf discovery rather than stored credentials: Spotify removed password
+# auth in 2024, and the house account authorises SESH once through
+# `seshd auth-spotify`. seshd then moves playback here by name over the Web API.
+#
+# --name must match `device_name` in /etc/sesh/spotify.toml, or `transfer` will
+# correctly report that it cannot find the room's device.
+ExecStart=/usr/bin/librespot \
+  --name SESH \
+  --backend pulseaudio \
+  --bitrate 320 \
+  --device-type speaker \
+  --disable-audio-cache
+
+# Where the music comes out. pair-speaker.sh writes a drop-in setting this to
+# the Victrola's sink; with no drop-in it is unset and PipeWire falls through to
+# the default sink, which is HDMI. Music on the TV is the right degradation —
+# better than a room where the speaker is off and nothing plays anywhere.
+#
+# Only librespot is redirected. The default sink stays HDMI, so Kodi,
+# RetroArch and Moonlight are untouched and game audio still goes to the TV.
+Environment=PULSE_SINK=
+
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target

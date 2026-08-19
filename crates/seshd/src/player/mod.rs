@@ -90,6 +90,16 @@ pub trait Player: Send + Sync + 'static {
 
     /// Move playback onto the room's own device.
     async fn transfer(&self) -> Result<()>;
+
+    /// Stop, without losing the place in the track.
+    ///
+    /// Used when the room's speaker goes away — see [`audio`](crate::audio).
+    /// A source that keeps playing into a sink nobody is listening to burns
+    /// through a queue the room never heard.
+    async fn pause(&self) -> Result<()>;
+
+    /// Carry on from where [`pause`](Self::pause) stopped.
+    async fn resume(&self) -> Result<()>;
 }
 
 #[cfg(test)]

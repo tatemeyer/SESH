@@ -220,3 +220,70 @@ systemctl --user restart seshd
 
 A `seshd` restart drops the kiosk's WebSocket; the surface reconnects on its
 own and re-fetches state, so the TV recovers without a reboot.
+
+## Audio out: the room speaker
+
+The default sink stays HDMI, so Kodi, RetroArch and Moonlight are untouched and
+game audio always goes to the TV. **Only librespot is redirected**, through
+`PULSE_SINK` on its user unit.
+
+### Pairing
+
+```sh
+sesh-pair-speaker            # pair, trust, connect, and write the drop-in
+sesh-pair-speaker --show     # what is paired and where music goes
+```
+
+On a Victrola Brighton, hold the Bluetooth button until the indicator flashes,
+then run the script and follow it. It trusts the device before connecting,
+which is what makes it come back by itself after the speaker is powered off and
+on — the normal way a room gets used.
+
+The drop-in it writes lives at
+`~/.config/systemd/user/sesh-librespot.service.d/sink.conf` and names the
+speaker's sink, which contains its MAC and so cannot be known before pairing.
+`install.sh` never writes or removes it, for the same reason it never clobbers
+`apps.toml`.
+
+**No speaker is a supported state.** With no drop-in, `PULSE_SINK` is unset,
+PipeWire falls through to the default sink, and music plays on the TV. That is
+the intended degradation — better than a room where the speaker is off and
+nothing plays anywhere.
+
+### Why librespot is a user unit
+
+Raspotify ships a **system** unit running as its own user. That user cannot
+reach the login session's PipeWire, so it cannot see the Bluetooth sink at all
+and plays to nothing — which looks exactly like a broken speaker and sends you
+debugging the wrong layer. `install.sh` masks the packaged unit and installs
+`sesh-librespot.service` as a user unit alongside `seshd`.
+
+`--name SESH` must match `device_name` in `/etc/sesh/spotify.toml`. If they
+disagree, `transfer` correctly reports that it cannot find the room's device.
+
+### The vinyl handoff
+
+The Victrola is a record player *and* the speaker, and those are the same input.
+Switching it to phono drops the A2DP link and the sink disappears.
+
+SESH treats that as a signal, not a fault: it records `audio.sink_lost` naming
+the sink and pauses the source, then `audio.sink_found` and resumes when
+Bluetooth comes back. Making the room *react* to that — dimming lights, showing
+"now spinning" — is a later arc reading events that are already in the log.
+
+### If the speaker will not work
+
+Bluetooth audio on a Pi is the least reliable thing in this system, which is why
+this is the last phase and why the fallback is a supported state. If the device
+turns out to be output-only rather than a true A2DP sink, `pair-speaker.sh` says
+so by name and stops. Everything else still ships; music stays on the TV.
+
+Check what happened:
+
+```sh
+systemctl --user status sesh-librespot
+journalctl --user -u sesh-librespot -n 50
+pactl list short sinks
+bluetoothctl devices Paired
+curl -s http://127.0.0.1:7373/api/events | grep audio.sink
+```
