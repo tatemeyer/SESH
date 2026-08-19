@@ -25,6 +25,8 @@ pub enum Call {
     Search(String),
     /// This URI was handed to the source.
     Enqueue(String),
+    /// This URI was started immediately.
+    Play(String),
     /// The current track was abandoned.
     Skip,
     /// Playback was moved to the room's device.
@@ -37,6 +39,7 @@ struct State {
     results: Vec<Track>,
     calls: Vec<Call>,
     failure: Option<String>,
+    write_failure: Option<String>,
 }
 
 /// A player that records what it was asked to do.
@@ -70,14 +73,37 @@ impl MockPlayer {
         self.lock().failure = Some(message.into());
     }
 
+    /// Fail only the calls that change something.
+    ///
+    /// A real state, not a contrivance: with no active Connect device Spotify
+    /// answers `GET /me/player` with 204 and 404s every write. The source is
+    /// reachable, so the conductor must not mark itself offline — it has to
+    /// keep trying instead.
+    pub fn fail_writes_with(&self, message: impl Into<String>) {
+        self.lock().write_failure = Some(message.into());
+    }
+
     /// Stop failing.
     pub fn recover(&self) {
-        self.lock().failure = None;
+        let mut state = self.lock();
+        state.failure = None;
+        state.write_failure = None;
     }
 
     /// Everything asked of this player, oldest first.
     pub fn calls(&self) -> Vec<Call> {
         self.lock().calls.clone()
+    }
+
+    /// Every URI started immediately, in order.
+    pub fn played(&self) -> Vec<String> {
+        self.calls()
+            .into_iter()
+            .filter_map(|call| match call {
+                Call::Play(uri) => Some(uri),
+                _ => None,
+            })
+            .collect()
     }
 
     /// Every URI handed over, in order.
@@ -111,9 +137,18 @@ impl MockPlayer {
     /// to push a track while Spotify was down" needs the attempt visible.
     fn record(&self, call: Call) -> Result<()> {
         let mut state = self.lock();
+        let changes_something = matches!(
+            call,
+            Call::Enqueue(_) | Call::Play(_) | Call::Skip | Call::Transfer
+        );
         state.calls.push(call);
         if let Some(failure) = &state.failure {
             bail!("mock player failure: {failure}");
+        }
+        if changes_something {
+            if let Some(failure) = &state.write_failure {
+                bail!("mock player write failure: {failure}");
+            }
         }
         Ok(())
     }
@@ -133,6 +168,10 @@ impl Player for MockPlayer {
 
     async fn enqueue(&self, uri: &str) -> Result<()> {
         self.record(Call::Enqueue(uri.to_string()))
+    }
+
+    async fn play(&self, uri: &str) -> Result<()> {
+        self.record(Call::Play(uri.to_string()))
     }
 
     async fn skip(&self) -> Result<()> {

@@ -442,7 +442,7 @@ network in the test suite.
 
 ## Phase 4 — The conductor
 
-- [ ] **4.1 The loop**
+- [x] **4.1 The loop**
 
   `crates/seshd/src/conductor.rs`, a tokio task like `reap_loop`. Polls
   `Player::playback()` every 3s while playing, 15s while idle.
@@ -456,14 +456,14 @@ network in the test suite.
   - Empty queue → nothing; do not fill with recommendations. A quiet room is a
     correct outcome.
 
-- [ ] **4.2 Startup reconciliation (D8)**
+- [x] **4.2 Startup reconciliation (D8)**
 
   On startup, poll actual playback and record what is needed for the log to
   agree with the speaker. Explicitly *not* Arc 1's close-the-dangling-row
   approach, and `docs/arc1-followups.md` gets a line saying why, so the next
   person does not "fix" this into the wrong shape.
 
-- [ ] **4.3 Degrade honestly**
+- [x] **4.3 Degrade honestly**
 
   Spotify unreachable → queue keeps accepting adds, `GET /api/music` reports
   `player: "offline"`, the loop backs off to 30s and retries. Launching Kodi is
@@ -472,6 +472,33 @@ network in the test suite.
 
   Tests: all of 4.1–4.3 against `MockPlayer` with a driven clock. No network in
   the suite.
+
+  **Built as `crates/seshd/src/conductor.rs`, 22 tests in
+  `crates/seshd/tests/conductor.rs`.** No clock at all in the end, driven or
+  otherwise: `tick()` does one pass and *returns* the next interval, so the
+  waiting lives in `run_loop` and nothing else. A test that advanced a fake
+  clock would have been testing tokio's timer rather than the conductor's
+  decisions.
+
+  Two deviations from this plan, both discovered while building it:
+
+  - **`Player` gained `play(uri)`.** `enqueue` appends to Spotify's queue but
+    never *begins* — with nothing on the speaker, enqueueing is silent and
+    stays silent. A room whose queue fills up before anyone has started
+    anything is the ordinary way an evening begins, and the plan as written
+    left it silent forever. `play` uses `uris:` rather than `context_uri:` so
+    Spotify cannot wander into an album nobody chose once the track ends.
+  - **`GET /api/music/search?q=` was missing.** Phase 5.3 needs it and no
+    phase specified it. Added here, since it is backend work: proxied through
+    `seshd` so the house account's access token never reaches a browser. It
+    503s on a box with no credentials and 502s on a source that is down —
+    neither is an empty list, because a phone showing "no results" for an
+    outage sends someone to reboot the router.
+
+  Also worth recording, because the test for it is easy to write wrongly: a
+  **pause is not an ending**. Spotify reports it as `Some` with
+  `is_playing: false`, and treating that as the track finishing would clear
+  the TV card the moment somebody answered the door.
 
 ## Phase 5 — Surfaces
 

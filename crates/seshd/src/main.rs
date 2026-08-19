@@ -7,12 +7,14 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use clap::Parser;
 use seshd::api::{router_with_ws, AppState};
+use seshd::conductor::{self, Conductor, Status};
 use seshd::config::{detect_lan_ip, load_apps_file};
 use seshd::join::JoinCodes;
 use seshd::launcher::platform::ProcessPlatform;
 use seshd::launcher::Launcher;
 use seshd::player::auth;
-use seshd::player::spotify::load_config as load_spotify_config;
+use seshd::player::spotify::{load_config as load_spotify_config, SpotifyPlayer};
+use seshd::player::Player;
 use seshd::presence::{self, Presence};
 use seshd::reconcile::close_unfinished_launches;
 use seshd::room::Room;
@@ -102,6 +104,35 @@ async fn authorise_spotify(args: &Args) -> Result<()> {
     .await
 }
 
+/// Build the music source, if this box has been given credentials.
+///
+/// Absence is not an error. A Pi with no Spotify app still launches Kodi and
+/// still keeps a queue; the vision's rule is that every subsystem degrades to
+/// *the room still plays media*, and refusing to boot over a missing music
+/// token would break that at the first hurdle.
+fn build_player(args: &Args) -> Option<Arc<dyn Player>> {
+    let token_path = args.spotify_token_path();
+    if !args.spotify_config.exists() || !token_path.exists() {
+        tracing::info!(
+            config = %args.spotify_config.display(),
+            token = %token_path.display(),
+            "no Spotify credentials; the queue will accept tracks but nothing will play"
+        );
+        return None;
+    }
+
+    match load_spotify_config(&args.spotify_config)
+        .and_then(|config| SpotifyPlayer::new(config, token_path))
+    {
+        Ok(player) => Some(Arc::new(player)),
+        Err(error) => {
+            // Warn rather than exit, for the same reason as above.
+            tracing::warn!(%error, "could not build the Spotify player; music is disabled");
+            None
+        }
+    }
+}
+
 /// Work out what to put in the join QR.
 ///
 /// Not derivable from the request: the TV loads the QR over `127.0.0.1`, so a
@@ -174,6 +205,27 @@ async fn main() -> Result<()> {
     let presence = Arc::new(Presence::seeded(&room.roster(), now_ms()));
     tokio::spawn(presence::sweep_loop(presence.clone(), room.clone()));
 
+    // Music, if this box has been given the credentials for it.
+    let music = Arc::new(Status::new());
+    let player = build_player(&args);
+    if let Some(player) = player.clone() {
+        let conductor = Conductor::new(room.clone(), player, music.clone());
+
+        // D8: reconcile against the *source*, not the log. librespot lives
+        // outside seshd's cgroup, so after a restart the music is still
+        // playing and it is the log that is out of date — the opposite of the
+        // launch reconciliation above. One pass before binding, so no client
+        // ever sees the stale picture.
+        let wait = conductor.tick().await;
+        tracing::info!(
+            ?wait,
+            online = music.is_online(),
+            "reconciled with the music source"
+        );
+
+        tokio::spawn(conductor::run_loop(conductor));
+    }
+
     let join_base = join_base(&args);
     tracing::info!(%join_base, "phones will be sent here by the join QR");
 
@@ -187,6 +239,8 @@ async fn main() -> Result<()> {
         launcher,
         join: Arc::new(JoinCodes::new()),
         presence,
+        player,
+        music,
         join_base,
     })
     .fallback_service(surface);

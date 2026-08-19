@@ -366,6 +366,20 @@ impl Player for SpotifyPlayer {
         Ok(())
     }
 
+    async fn play(&self, uri: &str) -> Result<()> {
+        // `uris` rather than `context_uri`: a context is an album or playlist,
+        // and handing Spotify one would let it carry on into tracks nobody in
+        // the room chose once this track ends.
+        self.call(
+            Method::PUT,
+            "/me/player/play",
+            &[],
+            Some(serde_json::json!({ "uris": [uri] })),
+        )
+        .await?;
+        Ok(())
+    }
+
     async fn skip(&self) -> Result<()> {
         self.call(Method::POST, "/me/player/next", &[], None)
             .await?;
