@@ -13,11 +13,16 @@ pub mod ws;
 
 use std::sync::Arc;
 
+use std::path::Path;
+
 use axum::routing::{get, post};
 use axum::Router;
+use tower_http::services::{ServeDir, ServeFile};
 
+use crate::conductor::Status;
 use crate::join::JoinCodes;
 use crate::launcher::Launcher;
+use crate::player::Player;
 use crate::presence::Presence;
 use crate::room::Room;
 
@@ -33,6 +38,14 @@ pub struct AppState {
     pub join: Arc<JoinCodes>,
     /// Who is in the room, per their phones.
     pub presence: Arc<Presence>,
+    /// The music source, when one is configured.
+    ///
+    /// `None` on a box with no Spotify credentials. The room still launches
+    /// apps and still keeps a queue; only search and playback go away, which
+    /// is the degradation the vision asks for rather than a failure to boot.
+    pub player: Option<Arc<dyn Player>>,
+    /// Whether the music source is answering, as the conductor last saw it.
+    pub music: Arc<Status>,
     /// Origin the QR points phones at, e.g. `http://192.168.40.195:7373`.
     ///
     /// It cannot be derived from the request: the TV fetches the QR over
@@ -58,7 +71,21 @@ pub fn router(state: AppState) -> Router {
         .route("/api/music", get(music::get_music))
         .route("/api/music/queue", post(music::queue_track))
         .route("/api/music/veto", post(music::veto_track))
+        .route("/api/music/search", get(music::search_tracks))
         .with_state(state)
+}
+
+/// Serve the built surface bundle, with unknown paths falling back to
+/// `index.html` so the surface owns its own routing (D9).
+///
+/// `fallback` rather than `not_found_service`, and the difference is the whole
+/// point: `not_found_service` serves the body but forces the status to **404**.
+/// A browser renders that anyway, so `/join` and `/phone` would have limped
+/// along looking fine while every status-code check — including the boot
+/// verification harness — called the surface broken.
+pub fn surface_service(static_dir: &Path) -> ServeDir<ServeFile> {
+    let index = static_dir.join("index.html");
+    ServeDir::new(static_dir).fallback(ServeFile::new(index))
 }
 
 /// The API router plus the live event feed. `router` alone is kept for
@@ -83,6 +110,13 @@ pub(crate) mod testing {
 
     /// A router over an in-memory room with one app registered.
     pub fn app() -> (Router, AppState) {
+        let (router, state, _player) = app_with_music();
+        (router, state)
+    }
+
+    /// The same fixture, keeping hold of the mock source so a test can
+    /// script what a search returns.
+    pub fn app_with_music() -> (Router, AppState, Arc<crate::player::mock::MockPlayer>) {
         let room = Room::new(Store::open_in_memory().unwrap()).unwrap();
         let launcher = Launcher::new(
             vec![AppSpec {
@@ -95,14 +129,17 @@ pub(crate) mod testing {
             Arc::new(MockPlatform::new()),
             room.clone(),
         );
+        let player = Arc::new(crate::player::mock::MockPlayer::new());
         let state = AppState {
             room: room.clone(),
             launcher: launcher.clone(),
             join: Arc::new(JoinCodes::new()),
             presence: Arc::new(Presence::new()),
+            player: Some(player.clone()),
+            music: Arc::new(Status::new()),
             join_base: "http://pi.test:7373".into(),
         };
-        (router(state.clone()), state)
+        (router(state.clone()), state, player)
     }
 
     /// Parse a response body as JSON.

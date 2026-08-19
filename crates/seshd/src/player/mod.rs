@@ -76,6 +76,15 @@ pub trait Player: Send + Sync + 'static {
     /// keeps the authoritative queue precisely so veto stays possible.
     async fn enqueue(&self, uri: &str) -> Result<()>;
 
+    /// Start this track now, rather than after whatever is playing.
+    ///
+    /// Distinct from [`enqueue`](Player::enqueue) because Spotify's queue
+    /// endpoint appends but never *begins*: with nothing on the speaker,
+    /// enqueueing is silent and stays silent. A room whose queue fills up
+    /// while nobody is playing anything is the ordinary way an evening
+    /// starts, so the conductor needs a way to break that silence.
+    async fn play(&self, uri: &str) -> Result<()>;
+
     /// Abandon the current track and move to whatever is next.
     async fn skip(&self) -> Result<()>;
 

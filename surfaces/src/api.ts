@@ -25,6 +25,72 @@ export interface SeshEvent {
   payload: unknown;
 }
 
+/** One track from a search. Mirrors `Track` in `player/mod.rs`. */
+export interface Track {
+  uri: string;
+  title: string;
+  artist: string;
+  duration_ms: number;
+}
+
+/** One queue entry. Mirrors `Entry` in `projections/queue.rs`. */
+export interface Entry extends Track {
+  entry: number;
+  added_by: string | null;
+  vetoes: string[];
+}
+
+/** Response of `GET /api/music`. */
+export interface MusicResponse {
+  now_playing: Entry | null;
+  pending: Entry[];
+  present: string[];
+  needed: number;
+  /** `ok`, or `offline` when the music source is unreachable. */
+  player: string;
+}
+
+/** Who this phone is. Mirrors `JoinResponse` in `api/join.rs`. */
+export interface Identity {
+  id: string;
+  name: string;
+}
+
+/** Where the bearer token lives. Never in a URL, never in the log (D3). */
+const TOKEN_KEY = "sesh.token";
+
+/** The stored token, or null on a phone that has not joined. */
+export function token(): string | null {
+  try {
+    return localStorage.getItem(TOKEN_KEY);
+  } catch {
+    // Safari in private mode throws on localStorage. A phone that cannot
+    // remember its token can still join again; crashing the boot cannot.
+    return null;
+  }
+}
+
+/** Remember the token, or forget it when passed null. */
+export function setToken(value: string | null): void {
+  try {
+    if (value === null) localStorage.removeItem(TOKEN_KEY);
+    else localStorage.setItem(TOKEN_KEY, value);
+  } catch {
+    /* see `token` */
+  }
+}
+
+function authorized(extra?: RequestInit): RequestInit {
+  const bearer = token();
+  return {
+    ...extra,
+    headers: {
+      ...(extra?.headers ?? {}),
+      ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}),
+    },
+  };
+}
+
 async function ok(response: Response): Promise<Response> {
   if (!response.ok) {
     throw new Error(`${response.status} ${response.statusText}`);
@@ -112,4 +178,87 @@ export function connectEvents(
     if (retry !== undefined) clearTimeout(retry);
     socket?.close();
   };
+}
+
+
+/** Trade a scanned join code for a token, and keep it. */
+export async function joinRoom(
+  code: string,
+  name: string,
+  fetchFn: typeof fetch = fetch,
+): Promise<Identity> {
+  const response = await ok(
+    await fetchFn("/api/join", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code, name }),
+    }),
+  );
+  const body = (await response.json()) as Identity & { token: string };
+  setToken(body.token);
+  return { id: body.id, name: body.name };
+}
+
+/**
+ * Who this phone is, or null if its token is no longer good.
+ *
+ * Null rather than throwing: a stale token is the ordinary state of a phone
+ * that joined last week, and it should land on the join screen rather than an
+ * error.
+ */
+export async function whoAmI(fetchFn: typeof fetch = fetch): Promise<Identity | null> {
+  if (token() === null) return null;
+  const response = await fetchFn("/api/me", authorized());
+  if (!response.ok) return null;
+  return (await response.json()) as Identity;
+}
+
+/** Tell seshd this phone is still in the room. */
+export async function heartbeat(fetchFn: typeof fetch = fetch): Promise<void> {
+  await fetchFn("/api/heartbeat", authorized({ method: "POST" }));
+}
+
+/** The queue, who is here, and whether the source is answering. */
+export async function getMusic(fetchFn: typeof fetch = fetch): Promise<MusicResponse> {
+  const response = await ok(await fetchFn("/api/music"));
+  return (await response.json()) as MusicResponse;
+}
+
+/** Search the music source. */
+export async function searchTracks(
+  query: string,
+  fetchFn: typeof fetch = fetch,
+): Promise<Track[]> {
+  const response = await ok(
+    await fetchFn(`/api/music/search?q=${encodeURIComponent(query)}`, authorized()),
+  );
+  return (await response.json()) as Track[];
+}
+
+/** Add a track to the queue. */
+export async function queueTrack(track: Track, fetchFn: typeof fetch = fetch): Promise<void> {
+  await ok(
+    await fetchFn(
+      "/api/music/queue",
+      authorized({
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(track),
+      }),
+    ),
+  );
+}
+
+/** Vote to skip a queue entry. */
+export async function vetoTrack(entry: number, fetchFn: typeof fetch = fetch): Promise<void> {
+  await ok(
+    await fetchFn(
+      "/api/music/veto",
+      authorized({
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ entry }),
+      }),
+    ),
+  );
 }

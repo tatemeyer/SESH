@@ -134,6 +134,17 @@ Recorded 2026-08-16, from the first real `sudo sh deploy/install.sh` run.
    `crates/seshd/src/reconcile.rs`. The RetroArch row above is closed by
    event 6 on the live Pi; the log has no unclosed launches.
 
+   **Do not generalise this to music.** Arc 2's conductor
+   (`crates/seshd/src/conductor.rs`) reconciles the *opposite* way, and the
+   difference is the cgroup argument above rather than a matter of taste.
+   librespot is its own service outside `seshd`'s cgroup, so restarting
+   `seshd` does not stop the music — after a restart a track really is still
+   playing, and closing the row would write a lie into an append-only log.
+   The conductor therefore polls the source on startup and corrects the log to
+   match reality, recording `music.started` or `music.skipped` as needed.
+   Same word, opposite direction, because the premise differs: here the log's
+   claim is provably stale, there the log's claim is probably still true.
+
 5. ~~**`install.sh` clobbers a configured `apps.toml`.**~~ **Fixed.**
    The installer used to run `install -Dm644 deploy/apps.toml
    /etc/sesh/apps.toml` unconditionally, so re-running it silently reverted

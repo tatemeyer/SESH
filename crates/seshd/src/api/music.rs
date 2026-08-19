@@ -4,16 +4,19 @@
 //! Adding and vetoing require a token, because those are the two actions that
 //! must have an actor attached to them.
 //!
-//! Nothing here plays anything. This module records what the room decided; the
-//! conductor that makes Spotify obey arrives in Phase 4. The queue is complete
-//! and correct before it is audible, which is the point of the split.
+//! Nothing here plays anything: this module records what the room decided, and
+//! [`conductor`](crate::conductor) is what makes the speaker agree with it. The
+//! queue was complete and correct before it was audible, which is the point of
+//! the split — and why `player: "offline"` is a field here rather than an
+//! error, since a room can still decide what it wants to hear.
 
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
 use crate::event::{kind, NewEvent};
+use crate::player::Track;
 use crate::projections::queue::Entry;
 use crate::veto;
 
@@ -27,6 +30,9 @@ const MAX_URI_LEN: usize = 300;
 /// Longest title or artist kept.
 const MAX_TEXT_LEN: usize = 200;
 
+/// Longest search query accepted.
+const MAX_QUERY_LEN: usize = 200;
+
 /// The whole queue, plus what a veto currently costs.
 #[derive(Debug, Serialize)]
 pub struct MusicResponse {
@@ -38,6 +44,20 @@ pub struct MusicResponse {
     pub present: Vec<String>,
     /// Votes needed to skip a track right now.
     pub needed: usize,
+    /// `ok` when the music source is answering, `offline` when it is not.
+    ///
+    /// The queue keeps accepting tracks either way — a phone should be able to
+    /// say what it wants to hear while the Wi-Fi is being difficult — but the
+    /// surface needs to be able to say so rather than implying silence is a
+    /// choice somebody made.
+    pub player: &'static str,
+}
+
+/// What to look for.
+#[derive(Debug, Deserialize)]
+pub struct SearchRequest {
+    /// The search text, as typed.
+    pub q: String,
 }
 
 /// A track someone wants to hear.
@@ -92,6 +112,34 @@ pub async fn get_music(State(state): State<AppState>) -> Json<MusicResponse> {
         pending: queue.pending().to_vec(),
         needed: veto::needed(&present),
         present,
+        player: state.music.label(),
+    })
+}
+
+/// `GET /api/music/search?q=`
+///
+/// Proxied through `seshd` rather than called from the phone directly: the
+/// access token would otherwise have to reach every browser in the house, and
+/// it is the house account's, not theirs.
+pub async fn search_tracks(
+    State(state): State<AppState>,
+    Authenticated(_person): Authenticated,
+    Query(request): Query<SearchRequest>,
+) -> Result<Json<Vec<Track>>, StatusCode> {
+    let query = request.q.trim();
+    if query.is_empty() || query.len() > MAX_QUERY_LEN {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let Some(player) = state.player.as_ref() else {
+        // No credentials on this box. Honest 503 rather than an empty list,
+        // which would read as "nothing matched".
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    };
+
+    player.search(query).await.map(Json).map_err(|error| {
+        tracing::warn!(%error, "searching the music source failed");
+        StatusCode::BAD_GATEWAY
     })
 }
 
@@ -223,6 +271,112 @@ mod tests {
 
     async fn music(app: &axum::Router) -> serde_json::Value {
         json(app.clone().oneshot(get_req("/api/music")).await.unwrap()).await
+    }
+
+    #[tokio::test]
+    async fn a_search_needs_a_token() {
+        let (app, _state) = app();
+        let response = app
+            .oneshot(get_req("/api/music/search?q=teenage%20dirtbag"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn a_search_returns_what_the_source_found() {
+        let (app, state, player) = crate::api::testing::app_with_music();
+        let sam = joined(&app, &state, "Sam").await;
+        player.set_results(vec![Track {
+            uri: "spotify:track:a".into(),
+            title: "Teenage Dirtbag".into(),
+            artist: "Wheatus".into(),
+            duration_ms: 240_000,
+        }]);
+
+        let response = app
+            .oneshot(get_with_token(
+                "/api/music/search?q=teenage%20dirtbag",
+                &sam,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = json(response).await;
+        assert_eq!(body[0]["title"], "Teenage Dirtbag");
+        assert_eq!(body[0]["uri"], "spotify:track:a");
+    }
+
+    // The query has to reach the source intact; a handler that dropped it
+    // would still return results and look perfectly fine.
+    #[tokio::test]
+    async fn the_query_reaches_the_source_as_typed() {
+        let (app, state, player) = crate::api::testing::app_with_music();
+        let sam = joined(&app, &state, "Sam").await;
+
+        app.oneshot(get_with_token(
+            "/api/music/search?q=hounds%20of%20love",
+            &sam,
+        ))
+        .await
+        .unwrap();
+
+        assert_eq!(
+            player.calls(),
+            vec![crate::player::mock::Call::Search("hounds of love".into())]
+        );
+    }
+
+    #[tokio::test]
+    async fn an_empty_search_is_rejected() {
+        let (app, state) = app();
+        let sam = joined(&app, &state, "Sam").await;
+
+        let response = app
+            .oneshot(get_with_token("/api/music/search?q=%20%20", &sam))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    // A source that is down is not the same as a search that found nothing,
+    // and a phone showing "no results" for an outage sends someone to reboot
+    // the router.
+    #[tokio::test]
+    async fn a_broken_source_is_a_bad_gateway_not_an_empty_list() {
+        let (app, state, player) = crate::api::testing::app_with_music();
+        let sam = joined(&app, &state, "Sam").await;
+        player.fail_with("spotify unreachable");
+
+        let response = app
+            .oneshot(get_with_token("/api/music/search?q=anything", &sam))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    }
+
+    #[tokio::test]
+    async fn a_box_with_no_credentials_says_so() {
+        let (app, state, _player) = crate::api::testing::app_with_music();
+        let mut state = state;
+        state.player = None;
+        let app_without = crate::api::router(state.clone());
+        let sam = joined(&app, &state, "Sam").await;
+
+        let response = app_without
+            .oneshot(get_with_token("/api/music/search?q=anything", &sam))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    // 4.3: the queue stays usable while the source is down, and the surface
+    // is told which of those two worlds it is in.
+    #[tokio::test]
+    async fn the_response_says_whether_the_source_is_answering() {
+        let (app, _state) = app();
+        assert_eq!(music(&app).await["player"], "offline");
     }
 
     #[tokio::test]

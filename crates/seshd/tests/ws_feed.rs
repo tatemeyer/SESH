@@ -31,6 +31,8 @@ async fn serve() -> (String, String, Arc<Room>) {
         launcher,
         join: Arc::new(JoinCodes::new()),
         presence: Arc::new(Presence::new()),
+        player: None,
+        music: Arc::new(seshd::conductor::Status::new()),
         join_base: "http://pi.test:7373".into(),
     });
 

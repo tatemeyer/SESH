@@ -391,16 +391,58 @@ network in the test suite.
   active; the refresh-once-then-fail path against a stub. Live calls are checked
   by hand in 3.4 rather than mocked into a false sense of security.
 
-- [ ] **3.4 Prove it on hardware** *(blocked: needs the house account's client id and secret, and a person to complete the OAuth redirect. Everything else in this phase is done and tested against a stub Spotify in `crates/seshd/tests/spotify_stub.rs`.)*
+- [x] **3.4 Prove it on hardware** *(read paths verified against real Spotify on
+  2026-08-19; `enqueue`/`skip` still unrun — see below)*
 
   Authorize the house account, `transfer()` to the Pi's device, search a track,
   enqueue it, `skip()`. Record what the API actually returned, especially
   anything the February 2026 changes moved. This is the task most likely to
   surface a surprise, which is why it comes before the conductor depends on it.
 
+  Kept as `crates/seshd/tests/spotify_live.rs`, `#[ignore]`d so the gate stays
+  offline and deterministic. Re-run it after any change to `player/spotify.rs`
+  and after Spotify announces an API change:
+
+  ```text
+  cargo test --test spotify_live -- --ignored --nocapture
+  ```
+
+  **What the real API returned.** No surprises, which is itself the finding —
+  the February 2026 changes had already been absorbed correctly:
+
+  - `search` returned **exactly 10** results for a broad query, confirming
+    `SEARCH_LIMIT` against the live cap rather than against the changelog.
+  - Every result mapped cleanly: `spotify:track:` URI, non-empty title and
+    artist, positive duration. The multi-artist join and the `- Remastered
+    2011` title suffixes came through as Spotify sends them, unmangled.
+  - `playback()` with nothing playing returned **204**, mapping to `None`
+    rather than erroring. This is the ordinary state of a quiet room and the
+    conductor will see it constantly.
+  - `transfer()` failed with the by-name error it was written to give: *no
+    Spotify Connect device named "SESH"*. Correct until librespot arrives in
+    Phase 6 — the point of the assertion is that it never degrades into a bare
+    404 that reads like a bug.
+  - Refresh worked from a cold start with no cached access token, so the stored
+    refresh token and both scopes are good.
+
+  **Still unrun: `enqueue` and `skip`.** They are behind `SESH_LIVE_MUTATE=1`
+  because they change what the house account is playing, and a routine test run
+  must not interrupt music in the room. Both need an **active Connect device**,
+  which does not exist until Phase 6, so today they can only return Spotify's
+  no-active-device error. Run them once librespot is up:
+
+  ```text
+  SESH_LIVE_MUTATE=1 cargo test --test spotify_live -- --ignored --nocapture
+  ```
+
+  Phase 4 must therefore treat "no active device" as an expected, recoverable
+  state rather than a fault — the exact shape of that error is unconfirmed, so
+  the conductor should degrade on any `enqueue`/`skip` failure rather than
+  matching on its text.
+
 ## Phase 4 — The conductor
 
-- [ ] **4.1 The loop**
+- [x] **4.1 The loop**
 
   `crates/seshd/src/conductor.rs`, a tokio task like `reap_loop`. Polls
   `Player::playback()` every 3s while playing, 15s while idle.
@@ -414,14 +456,14 @@ network in the test suite.
   - Empty queue → nothing; do not fill with recommendations. A quiet room is a
     correct outcome.
 
-- [ ] **4.2 Startup reconciliation (D8)**
+- [x] **4.2 Startup reconciliation (D8)**
 
   On startup, poll actual playback and record what is needed for the log to
   agree with the speaker. Explicitly *not* Arc 1's close-the-dangling-row
   approach, and `docs/arc1-followups.md` gets a line saying why, so the next
   person does not "fix" this into the wrong shape.
 
-- [ ] **4.3 Degrade honestly**
+- [x] **4.3 Degrade honestly**
 
   Spotify unreachable → queue keeps accepting adds, `GET /api/music` reports
   `player: "offline"`, the loop backs off to 30s and retries. Launching Kodi is
@@ -431,30 +473,124 @@ network in the test suite.
   Tests: all of 4.1–4.3 against `MockPlayer` with a driven clock. No network in
   the suite.
 
+  **Built as `crates/seshd/src/conductor.rs`, 22 tests in
+  `crates/seshd/tests/conductor.rs`.** No clock at all in the end, driven or
+  otherwise: `tick()` does one pass and *returns* the next interval, so the
+  waiting lives in `run_loop` and nothing else. A test that advanced a fake
+  clock would have been testing tokio's timer rather than the conductor's
+  decisions.
+
+  Two deviations from this plan, both discovered while building it:
+
+  - **`Player` gained `play(uri)`.** `enqueue` appends to Spotify's queue but
+    never *begins* — with nothing on the speaker, enqueueing is silent and
+    stays silent. A room whose queue fills up before anyone has started
+    anything is the ordinary way an evening begins, and the plan as written
+    left it silent forever. `play` uses `uris:` rather than `context_uri:` so
+    Spotify cannot wander into an album nobody chose once the track ends.
+  - **`GET /api/music/search?q=` was missing.** Phase 5.3 needs it and no
+    phase specified it. Added here, since it is backend work: proxied through
+    `seshd` so the house account's access token never reaches a browser. It
+    503s on a box with no credentials and 502s on a source that is down —
+    neither is an empty list, because a phone showing "no results" for an
+    outage sends someone to reboot the router.
+
+  **Mutation tested: 40 mutants, 39 caught.** The first run caught 34 and the
+  six survivors were all genuine gaps, not noise:
+
+  - `Status::set`'s return value only drives a log line, so nothing pinned it.
+    Inverted, the Pi logs "the music source is answering again" on every poll
+    of a healthy source and never logs the transition that matters.
+  - The `REWIND_MS` threshold, both the term and its boundary. Spotify's
+    reported progress jitters between polls; without the threshold any
+    backwards wobble during the pre-push window reads as "the same song started
+    again" and writes a spurious `music.started` into an append-only log every
+    few seconds for the length of the track.
+  - Both identity checks in `claim`. One lets a committed track wrongly claim a
+    *different* song that starts; the other never clears the committed marker,
+    so the conductor believes something is pending forever and every later seek
+    becomes a replay.
+
+  The one survivor left is `replace run_loop with ()`. `run_loop` is the
+  infinite sleep-and-tick wrapper — it never returns, so no test can observe
+  the difference. Contorting the suite to kill it would test tokio's timer,
+  which is precisely what the `tick()` design exists to avoid.
+
+  Also worth recording, because the test for it is easy to write wrongly: a
+  **pause is not an ending**. Spotify reports it as `Some` with
+  `is_playing: false`, and treating that as the track finishing would clear
+  the TV card the moment somebody answered the door.
+
 ## Phase 5 — Surfaces
 
-- [ ] **5.1 The boot switch** — `main.ts` branches on `location.pathname` (D9).
+- [x] **5.1 The boot switch** — `main.ts` branches on `location.pathname` (D9).
 
-- [ ] **5.2 The join screen** — `/join?c=`: name field, POST, store token, go to
+- [x] **5.2 The join screen** — `/join?c=`: name field, POST, store token, go to
   `/phone`. An already-joined phone skips straight through.
 
-- [ ] **5.3 The phone queue** — search box (debounced, 10 results), tap to
+- [x] **5.3 The phone queue** — search box (debounced, 10 results), tap to
   queue, the pending list with who added each track, a veto button per entry
   showing the tally (`2/3`), and now-playing at the top. Thumb-sized targets;
   this is used standing up in a dark room. Polls `GET /api/music`, and
   heartbeats while the page is visible.
 
-- [ ] **5.4 The TV now-playing card** — a strip under the tile grid: track,
+- [x] **5.4 The TV now-playing card** — a strip under the tile grid: track,
   artist, who queued it, and how many are waiting. Hidden when nothing is
   playing, so a room with no music looks exactly as it does today. Fed by the
   existing WS feed, adding `music.*` to the kinds that trigger `refresh()`.
 
-- [ ] **5.5 The QR** — on the TV home screen, small, in a corner, next to
+- [x] **5.5 The QR** — on the TV home screen, small, in a corner, next to
   "scan to join". `<img src="/api/join/qr.svg">` refreshed on the rotation
   interval.
 
   Tests: `renderHome` with and without now-playing; the phone view's pure
   render given a queue; the veto button's disabled state once you have voted.
+
+  **Built. 57 vitest tests, up from 26.** Files: `route.ts` (the switch),
+  `tv.ts` (the TV controller, moved out of `main.ts` so `main.ts` is only the
+  switch), `phone.ts` (both phone controllers), `views/join.ts`,
+  `views/phone.ts`, and the strip plus QR added to `views/home.ts`.
+
+  Notes worth keeping:
+
+  - **`surfaceFor` lives in its own module.** `main.ts` starts a surface as a
+    side effect of being imported, so testing the routing by importing
+    `main.ts` would boot the TV inside the test runner.
+  - **The phone polls; it does not use the WebSocket.** The feed exists and the
+    TV uses it, but a phone in a pocket with a silently dropped socket showing
+    a stale queue is worse than three seconds of lag. `document.hidden` gates
+    both the poll and the heartbeat, so a pocketed phone stops counting toward
+    the veto denominator — which is the correct answer to "who is in the room".
+  - **`body { overflow: hidden }` had to become `body:has(.home)`.** It was a
+    TV rule written when the TV was the only surface; left alone it made the
+    phone queue unscrollable, which reads as a broken app rather than a long
+    page.
+  - **One existing test changed, deliberately.** `renderHome`'s XSS test
+    asserted `querySelector("img")` was null, which was a valid proxy only
+    while the home screen had no images of its own. The join QR is a
+    legitimate `<img>`. The assertion now names the *injected* element and
+    also checks the escaped name survives as text — stricter than what it
+    replaced, not weaker.
+  - **A real bug, found by running the binary rather than the suite.** D9 says
+    "seshd already serves `index.html` for unknown paths precisely so the
+    surface owns its routing." It did not. `ServeDir::not_found_service`
+    serves the fallback body and then **forces the status to 404**, so `/join`
+    and `/phone` returned a byte-perfect page under a `404 Not Found`. Arc 1's
+    surface only ever lived at `/`, which `ServeDir` resolves directly, so the
+    fallback had never once been exercised. A browser renders a 404 body
+    without complaint — the phone would have worked in the room while `curl
+    -f`, the boot verification harness, and anything caching by status all
+    disagreed. `ServeDir::fallback` passes the status through;
+    `crates/seshd/tests/surface_routes.rs` pins it, including the case that
+    must still 404, since a missing bundle is a broken install rather than a
+    page. Worth generalising: the Rust suite was green, clippy was clean, and
+    every DOM test passed. Neither layer speaks HTTP, so neither could see it.
+
+  - **Still unverified: how any of it looks.** Every test here is a DOM
+    assertion. Nothing has confirmed that the strip fits under the grid on a
+    real 16:9 TV, that the QR scans at 8vw from couch distance, or that the
+    veto buttons are actually thumb-sized in a dark room. That is the Phase 1
+    real-phone check deferred to here, and it needs the hardware.
 
 ## Phase 6 — Audio out
 

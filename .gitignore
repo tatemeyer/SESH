@@ -7,3 +7,7 @@
 # subagent-driven-development scratch workspace (briefs, reports, review packages).
 # Deleted when the plan completes; the git history is the record.
 /.superpowers
+
+# cargo-mutants working directory and report.
+/mutants.out
+/mutants.out.old
