@@ -48,6 +48,11 @@ cd surfaces && npm run build
 `#![warn(missing_docs)]` plus `-D warnings` means **every** `pub` item needs a
 doc comment, including public struct fields and module `//!` headers.
 
+**CI runs these same five on every pull request** — `.github/workflows/gate.yml`.
+This list is the specification; that file follows it. If they disagree, the file
+is the bug. CI is a floor and not a substitute: it runs on x86 and proves the
+suite is green, never that the room works, so every arc still closes on the Pi.
+
 ## Conventions
 
 - **TDD.** Write the failing test, run it and watch it fail, then implement.
