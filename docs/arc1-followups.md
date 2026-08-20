@@ -13,12 +13,19 @@ the merge gate; all came out of the whole-branch review and its fix wave.
    viewer this is invisible, but `spawn_blocking` (or a dedicated thread) is
    the correct shape.
 
-2. **Cap and jitter the WebSocket reconnect.**
-   `surfaces/src/api.ts` retries on a flat 1000ms with no backoff. Against a
-   `seshd` that stays down — a failed upgrade, say — the kiosk Chromium opens
-   one socket and logs one `console.error` per second indefinitely. It is one
-   client, so not a server-side storm, but console growth is unbounded in a
+2. ~~**Cap and jitter the WebSocket reconnect.**~~ **Resolved 2026-08-20.**
+   `surfaces/src/api.ts` retried on a flat 1000ms with no backoff. Against a
+   `seshd` that stays down — a failed upgrade, say — the kiosk Chromium opened
+   one socket and logged one `console.error` per second indefinitely. It is one
+   client, so not a server-side storm, but console growth was unbounded in a
    browser that never restarts.
+
+   The delay now doubles per consecutive failure, is jittered to 50–100% of
+   that, and caps at 30s, so the TV still recovers within half a minute of
+   `seshd` returning. A successful open resets the backoff. The
+   `console.error` is now emitted once per *outage* rather than once per
+   attempt, which is what actually bounds the console — the backoff alone
+   would only have slowed the growth.
 
 3. ~~**Record that the SIGTERM test has never executed.**~~ **Resolved
    2026-08-15 on the Pi.** `kill_lets_a_unix_child_run_its_shutdown_path` in

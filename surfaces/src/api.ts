@@ -118,6 +118,16 @@ export async function quitApp(fetchFn: typeof fetch = fetch): Promise<void> {
 const RECONNECT_DELAY_MS = 1000;
 
 /**
+ * Ceiling on the reconnect backoff.
+ *
+ * The delay doubles per consecutive failure so a `seshd` that stays down — a
+ * failed upgrade, say — is not retried once a second forever by a kiosk
+ * Chromium that never restarts. It stops doubling here so the TV still comes
+ * back within half a minute of `seshd` returning.
+ */
+const RECONNECT_MAX_DELAY_MS = 30_000;
+
+/**
  * Subscribe to the live event feed. Returns a function that disconnects.
  * The socket URL is derived from the page so this works identically
  * against the Vite dev proxy and against seshd on the Pi.
@@ -141,12 +151,26 @@ export function connectEvents(
   let socket: WebSocket | null = null;
   let retry: ReturnType<typeof setTimeout> | undefined;
   let disconnected = false;
+  let failures = 0;
+  let reported = false;
+
+  // Exponential, capped, and jittered. The jitter matters even for a single
+  // client: without it every surface in the house wakes on the same tick after
+  // a restart and they all reconnect in lockstep.
+  function backoffMs(): number {
+    const ceiling = Math.min(RECONNECT_DELAY_MS * 2 ** failures, RECONNECT_MAX_DELAY_MS);
+    return ceiling * (0.5 + Math.random() * 0.5);
+  }
 
   function connect(isReconnect: boolean): void {
     const sock = new WsCtor(url);
     socket = sock;
 
     sock.onopen = () => {
+      // A socket that opened is the end of the outage: forget the backoff, and
+      // arm the log again so the *next* outage is still reported once.
+      failures = 0;
+      reported = false;
       if (isReconnect) onReconnect?.();
     };
 
@@ -162,12 +186,19 @@ export function connectEvents(
 
     // A failed socket fires error then close, so close alone drives the retry.
     sock.onerror = () => {
-      console.error("sesh: event socket error");
+      // Once per outage, not once per attempt. There is no console to read on
+      // the TV, and a browser that never restarts would otherwise grow this
+      // line without bound for as long as `seshd` is away.
+      if (reported) return;
+      reported = true;
+      console.error("sesh: event socket error; retrying with backoff until it returns");
     };
 
     sock.onclose = () => {
       if (disconnected) return;
-      retry = setTimeout(() => connect(true), RECONNECT_DELAY_MS);
+      const wait = backoffMs();
+      failures += 1;
+      retry = setTimeout(() => connect(true), wait);
     };
   }
 
