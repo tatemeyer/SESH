@@ -28,12 +28,27 @@ show() {
     echo "Paired devices:"
     bluetoothctl devices Paired | sed 's/^/  /' || echo "  (none)"
     echo
+    echo "Speaker bond:"
+    SPK="$(bluetoothctl devices Paired | awk '/Victrola|Speaker|Brighton/ {print $2; exit}')"
+    if [ -z "$SPK" ]; then
+        echo "  no speaker is paired. If one used to be, its bond was lost —"
+        echo "  re-run this script with the speaker in pairing mode."
+    else
+        bluetoothctl info "$SPK" | grep -E "Paired|Trusted|Connected" | sed 's/^\s*/  /'
+    fi
+    echo
     echo "Sinks:"
     pactl list short sinks | awk -F'\t' '{print "  " $2}'
     echo
     echo "Music is routed to:"
     if [ -f "$DROPIN" ]; then
-        sed -n 's/^Environment=PULSE_SINK=/  /p' "$DROPIN"
+        WANT="$(sed -n 's/^Environment=PULSE_SINK=//p' "$DROPIN")"
+        echo "  $WANT"
+        if ! pactl list short sinks | awk -F'\t' '{print $2}' | grep -qxF "$WANT"; then
+            echo "  ^ that sink does not exist right now, so PipeWire falls through"
+            echo "    to the default and music comes out of the TV. Pair the speaker"
+            echo "    again to get out of the fallback."
+        fi
     else
         echo "  (no drop-in — falls through to the default sink, i.e. the TV)"
     fi
@@ -141,5 +156,16 @@ systemctl --user restart sesh-librespot.service 2>/dev/null || true
 echo
 show
 echo
-echo "Now confirm it survives a power cycle: turn the speaker off and on and"
-echo "re-run with --show. Trusted devices reconnect by themselves."
+echo "Now confirm the bond actually persisted, because on this hardware it may"
+echo "not have. Turn the speaker off and on, wait a few seconds, then:"
+echo
+echo "    $0 --show"
+echo
+echo "Paired: yes  -> good, it will come back by itself from now on."
+echo "Paired: no   -> the bond did not survive. \`Trusted\` alone cannot"
+echo "                reconnect anything; it needs a stored link key. The"
+echo "                Victrola Brighton was observed doing exactly this:"
+echo "                /var/lib/bluetooth/<adapter>/<mac>/info held [General]"
+echo "                and nothing else, where a device that reconnects has"
+echo "                [LinkKey] or [LongTermKey] too. Re-run this script with"
+echo "                the speaker in pairing mode to play again."

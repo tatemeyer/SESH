@@ -316,6 +316,38 @@ whatever is active when they cannot, warning as they go. A silent speaker is
 better than a broken queue — but a queue playing into a pocket two streets away
 is neither.
 
+### The Victrola does not keep its bond
+
+Observed on 2026-08-19, twice, and worth knowing before it wastes an evening:
+**pairing succeeds and then evaporates.** `bluetoothctl pair` reports success,
+`Paired: yes` is true for as long as the connection lasts, and then the device
+comes back `Paired: no` with no bluetoothd restart and nothing in the journal.
+
+The cause is visible on disk. BlueZ stores each device under
+`/var/lib/bluetooth/<adapter>/<mac>/info`, and the Victrola's holds:
+
+```
+[General]
+Name=Victrola Brighton
+Class=0x240408
+SupportedTechnologies=BR/EDR;
+Trusted=true
+```
+
+`[General]` and nothing else. The Basilisk mouse, which reconnects reliably, has
+`[IdentityResolvingKey]`, `[LongTermKey]` and three more. **No link key was ever
+stored**, so there is no bond to reconnect with — and `Trusted=true` persisting
+is a red herring, because trust without a key cannot reconnect anything.
+
+So the practical rule for this speaker: **it needs re-pairing after it is
+powered off**, and `sesh-pair-speaker` now says so instead of promising
+otherwise. Whether that is the unit's firmware or something fixable has not been
+established.
+
+What still works either way: the sink appears on connect, `seshd` records
+`audio.sink_found`, music routes to it, and losing it degrades to the TV. The
+fallback covers this — you just have to pair again to get out of the fallback.
+
 ### The vinyl handoff
 
 The Victrola is a record player *and* the speaker, and those are the same input.
