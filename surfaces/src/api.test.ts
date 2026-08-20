@@ -50,6 +50,8 @@ describe("quitApp", () => {
 
 /** Mirrors `RECONNECT_DELAY_MS` in `api.ts`, which is deliberately private. */
 const RECONNECT_DELAY = 1000;
+/** Mirrors `RECONNECT_MAX_DELAY_MS` in `api.ts`, likewise private. */
+const RECONNECT_MAX_DELAY = 30_000;
 
 type SocketHandlers = Record<"onopen" | "onmessage" | "onclose" | "onerror", (e?: unknown) => void>;
 
@@ -136,6 +138,110 @@ describe("connectEvents", () => {
     vi.advanceTimersByTime(RECONNECT_DELAY * 10);
 
     expect(FakeWs).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
+  it("backs off instead of retrying on a flat interval", () => {
+    vi.useFakeTimers();
+    // Pin jitter so the schedule is deterministic; the jitter itself is
+    // asserted separately below.
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+    const { FakeWs, handlers } = fakeSockets();
+
+    connectEvents(() => {}, FakeWs as unknown as typeof WebSocket);
+
+    // Third failure in a row must wait longer than the first did.
+    handlers[0].onclose();
+    vi.advanceTimersByTime(RECONNECT_DELAY);
+    expect(FakeWs).toHaveBeenCalledTimes(2);
+
+    handlers[1].onclose();
+    vi.advanceTimersByTime(RECONNECT_DELAY);
+    expect(FakeWs).toHaveBeenCalledTimes(2); // still waiting: the delay grew
+
+    vi.advanceTimersByTime(RECONNECT_MAX_DELAY);
+    expect(FakeWs).toHaveBeenCalledTimes(3);
+
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  it("caps the delay so a long outage does not back off forever", () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(1);
+    const { FakeWs, handlers } = fakeSockets();
+
+    connectEvents(() => {}, FakeWs as unknown as typeof WebSocket);
+
+    // A seshd that never comes back: twenty failures must not push the
+    // delay past the cap, or the TV stops trying inside a human lifetime.
+    for (let i = 0; i < 20; i += 1) {
+      handlers[i].onclose();
+      vi.advanceTimersByTime(RECONNECT_MAX_DELAY);
+      expect(FakeWs).toHaveBeenCalledTimes(i + 2);
+    }
+
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  it("jitters the delay so it is not the same every time", () => {
+    vi.useFakeTimers();
+    const { FakeWs, handlers } = fakeSockets();
+
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    connectEvents(() => {}, FakeWs as unknown as typeof WebSocket);
+    handlers[0].onclose();
+    // With the lowest jitter the retry lands strictly before the full delay.
+    vi.advanceTimersByTime(RECONNECT_DELAY - 1);
+    expect(FakeWs).toHaveBeenCalledTimes(2);
+
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  it("resets the backoff once a socket opens again", () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+    const { FakeWs, handlers } = fakeSockets();
+
+    connectEvents(() => {}, FakeWs as unknown as typeof WebSocket);
+
+    handlers[0].onclose();
+    vi.advanceTimersByTime(RECONNECT_MAX_DELAY);
+    handlers[1].onclose();
+    vi.advanceTimersByTime(RECONNECT_MAX_DELAY);
+    expect(FakeWs).toHaveBeenCalledTimes(3);
+
+    // A good socket clears the history, so the next drop is cheap again.
+    handlers[2].onopen();
+    handlers[2].onclose();
+    vi.advanceTimersByTime(RECONNECT_DELAY);
+    expect(FakeWs).toHaveBeenCalledTimes(4);
+
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  it("logs one error per outage rather than one per attempt", () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { FakeWs, handlers } = fakeSockets();
+
+    connectEvents(() => {}, FakeWs as unknown as typeof WebSocket);
+
+    // Chromium on the TV never restarts, so a seshd that stays down must not
+    // grow the console without bound.
+    for (let i = 0; i < 10; i += 1) {
+      handlers[i].onerror();
+      handlers[i].onclose();
+      vi.advanceTimersByTime(RECONNECT_MAX_DELAY);
+    }
+
+    expect(error).toHaveBeenCalledTimes(1);
+
+    vi.restoreAllMocks();
     vi.useRealTimers();
   });
 
