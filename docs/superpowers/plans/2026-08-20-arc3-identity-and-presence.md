@@ -1,0 +1,226 @@
+# Arc 3 — Identity & Presence — Implementation Plan
+
+**Goal:** The room can tell *who is in it* from *who is looking at their phone*,
+and it says which one it knows. Presence stops being a single fragile proxy and
+becomes a fusion of signals, each of which records how it knows — with one real
+non-heartbeat signal built, so the fusion is exercised rather than theoretical.
+
+**Spec:** `docs/superpowers/specs/2026-08-19-identity-and-presence.md`
+(merged as PR #32, approved 2026-08-20).
+
+**Status:** Proposed. Needs approval before implementation.
+
+---
+
+## Scope, stated first because this spec invites sprawl
+
+The spec describes six beats, a voice, tiers, profiles and the Stage. **This arc
+builds the shape underneath all of them and none of them.**
+
+| In | Out — and which arc it belongs to |
+|---|---|
+| `via` on presence events | The roster surface — later arc |
+| The fusion projection (signals → who is here) | Attract Mode's first draft — later arc |
+| Attention and presence as separate questions | Per-person profiles, mascots, cosmetics — Arc 4+ |
+| One real BLE signal, in the room | Tiers and what they gate — deferred, see below |
+| `asserted` as an ingest path | The Stage — Arc 4 |
+
+The roster, Attract Mode and profiles are the things this arc **unblocks**. Each
+becomes cheap once presence is trustworthy, and each is dishonest before then —
+a roster built on today's presence would be a list of who has a tab open.
+
+**The voice, the rarity law and the six beats are not implemented here.** They
+are design constraints on surfaces this arc does not build. They are quoted in
+the spec and stay there until there is a surface to apply them to.
+
+## The open questions
+
+The spec leaves three. **Only one gates this arc.**
+
+**Q1 — what do the tiers gate?** *Not needed.* Tiers govern the veto denominator
+and admin powers, and this arc changes neither. It changes what *presence* means,
+which is an input to the denominator; the denominator's own policy is a separate
+decision that gets easier once presence is real. Deferred with the roster.
+
+**Q2 — how deep does profile customization go?** *Not needed.* Profiles are out
+of scope entirely.
+
+**Q3 — which BLE shape does the house adopt?** **This one gates Phase 4** and
+must be answered before that phase codes. Evidence below.
+
+### Q3, with a measurement rather than an argument
+
+The spec states, flagged explicitly as a design constraint rather than verified
+fact, that modern phones cannot be passively identified over BLE. **Measured on
+TatePi, 2026-08-20, 19 minutes of passive observation:**
+
+```
+addresses that advertised          340
+  resolvable-private (rotating)    189   56%
+  random-static                    106
+  public                            30
+  non-resolvable                    15
+ever advertised a name              18 of 340
+```
+
+The rotation signature is the *arrival pattern*, not the raw count:
+
+```
+new addresses first seen, per 10-minute window
+                public   resolvable-private
+  0–10 min          30                  163
+ 10–20 min           0                   26
+```
+
+**Addresses that cannot rotate saturate; addresses that can, never do.** Every
+public address in range was found in the first ten minutes and then no more
+appeared, while resolvable-private addresses kept arriving at a steady rate. If
+the churn were people walking past, new public addresses would keep arriving
+too. They do not.
+
+That is the spec's constraint, confirmed with an in-dataset control rather than
+assumed: **a passive scan cannot hold a stable per-person identity.** Something
+must be bonded or carried.
+
+**Recommendation: tags first, bonded phones as an optional second `via`.**
+
+- A tag advertises a stable address and needs no cooperation from a phone, no
+  pairing flow per guest, and no app.
+- Bonding every guest's phone puts the arc's foundation on the shakiest ground
+  in this system. BlueZ bonding has now cost this project time **twice** — the
+  `ClassicBondedOnly` rejection in Arc 1, and the agent-lifetime defect fixed in
+  #35, where pairing reported success and silently stored no key for weeks.
+  It works now, and it is still not what a guest should have to do at the door.
+- The resident case is where a tag plainly wins: keys are already in a pocket.
+- Guests keep the heartbeat as the floor, which is what the fusion is *for*.
+
+This is a recommendation, not a decision. **Tate answers it before Phase 4.**
+
+## Shape of the work
+
+Five phases, each landing as its own PR behind a green gate. Ordered so the
+three phases with no hardware dependency come first and the whole model is
+provable before a radio is involved — the inverse of Arc 2, which learned this
+the hard way.
+
+| # | Phase | Lands | Hardware? |
+|---|---|---|---|
+| 1 | `via` on presence | Every presence row says how it knows | No |
+| 2 | Attention ≠ presence | The two questions separate, callers choose | No |
+| 3 | The fusion projection | Signals → who is here, per-`via` windows | No |
+| 4 | A real BLE signal | `via: ble` from actual hardware | **Yes** |
+| 5 | An ordinary evening | The roster checked against the couch | **Yes, and people** |
+
+### Phase 1 — `via` on presence
+
+`presence.arrived` and `presence.left` carry `via`. Additive: absent means
+unknown, which is exactly what the existing rows are.
+
+- Vocabulary: `ble`, `wifi`, `heartbeat`, `asserted`. Fixed set, validated on
+  the way in, but an unknown value is **preserved and treated as unknown**
+  rather than rejected — `POST /api/events` stays open per the invariant.
+- `rssi` rides along when the signal has one. Coarse confidence is a projection
+  concern, not a log concern; the log records the reading.
+- Everything SESH emits today becomes `via: heartbeat`, which is honest about
+  what it has always meant.
+
+**Tests:** a `presence.arrived` posted through `POST /api/events` with no `via`
+is valid and reads as unknown; one with an unrecognised `via` is preserved;
+round-trip through the store.
+
+### Phase 2 — attention and presence come apart
+
+Today `presence.rs` answers one question and `veto.rs` uses it for another.
+
+- **Attention** — is this person looking at SESH right now. The heartbeat
+  measures it well. Correct input for *may this person act*.
+- **Presence** — is this person in the room tonight. Correct input for the
+  roster, the denominator, and every later arc.
+
+Both are computed; callers name which they want. The veto denominator moves to
+presence, and that is the one behaviour change in this phase — it is why the
+phase exists, and it is why the arc does not close until Phase 5 checks the
+denominator against a real room.
+
+**Tests:** a phone that goes quiet loses attention but keeps presence until its
+presence window expires; the denominator follows presence, not attention.
+
+### Phase 3 — the fusion projection
+
+A pure function over signal sequences, in the same category as the existing
+projections. No I/O, no hardware, no clock beyond `Clock::mono_ms`.
+
+Settled here, per the spec's *Behaviour to settle*:
+
+- **Per-`via` windows.** A BLE gap of thirty seconds is someone walking to the
+  kitchen; a heartbeat gap of thirty seconds is a locked screen. These are not
+  the same timeout and pretending they are is the current defect in miniature.
+- **Precedence when signals disagree.** Proposed: presence is the *union* of
+  signals that are live, and a stronger `via` only overrides a weaker one when
+  it is **positively absent**, never merely stale. BLE saying "gone" outranks
+  the heartbeat saying "here"; BLE saying *nothing* does not.
+- **`asserted` outranks everything and expires.** A room that can be told it is
+  wrong is the spec's requirement; an assertion that never expires is a lie with
+  a long half-life.
+- **`person.joined` keeps its meaning** — becoming known to the house, once.
+  Recognition is `presence.arrived` with a `via`. They were always different
+  events and only looked like one because joining was the only way in.
+
+**Tests:** synthetic evenings — seed BLE beats, heartbeats and assertions on a
+timeline, assert the roster at each step. This is where the logic lives, and it
+is all testable with no network and no radio.
+
+### Phase 4 — a real BLE signal — *gated on Q3*
+
+Whatever shape Q3 picks, emitting `presence.arrived {via: "ble", rssi}` into the
+same `Room::record` path as everything else. RSSI is what separates *in this
+room* from *in this apartment*, and its threshold is tuned in Phase 5, not
+guessed here.
+
+Two things already measured that this phase must not rediscover:
+
+- A passive scan sees ~340 addresses in 19 minutes in this flat, 56% of them
+  rotating. The scanner must match against known identities, never enumerate.
+- **Killing a scan client mid-discovery latches `Discovering: yes`**, after
+  which the adapter silently finds nothing and `scan off` fails. Cost two dead
+  ends on 2026-08-20. Whatever holds discovery must stop it on every exit path.
+
+### Phase 5 — an ordinary evening
+
+Not a test suite. The spec is explicit and it is the same bar Arcs 1 and 2
+closed against: **the roster at 11pm, compared against the people actually in
+the room, counted by looking up from the couch.**
+
+Until that comparison exists, no threshold derived from presence — the veto
+denominator above all — is trustworthy, and no design may be tuned against the
+numbers currently in the log.
+
+## Definition of Done
+
+1. Every presence row SESH writes carries a `via`; rows that predate the change
+   read as unknown and nothing breaks.
+2. A `presence.arrived` posted through `POST /api/events` by a producer that
+   has never heard of `via` is still valid.
+3. Attention and presence are separately answerable, and the veto denominator
+   uses presence.
+4. The fusion projection is proven over synthetic evenings with no hardware.
+5. A real BLE signal produces `via: ble` rows in the live log on TatePi.
+6. **The 11pm roster matches the people in the room**, checked by looking, with
+   real phones or tags belonging to real people.
+7. Gate green at every phase boundary.
+
+Items 5 and 6 are the ones a green suite cannot see. Arc 2 lost its time to
+exactly four bugs of that kind, and every one of them lived outside a test
+boundary.
+
+## Not in scope
+
+- **Backfilling the existing rows.** Append-only; absent `via` is unknown.
+- **The roster surface, Attract Mode, profiles, tiers, party mode.** Unblocked
+  by this arc, delivered by later ones.
+- **Wifi as a signal.** It is in the `via` vocabulary from Phase 1 so the log
+  and the fusion can accept it, but no wifi watcher is built here. BLE is the
+  signal that distinguishes this room from this apartment, and that distinction
+  is the point.
+- **Replacing the heartbeat.** BLE outranks it. It does not remove it, and the
+  degraded mode the vision describes stays exactly as it is.
