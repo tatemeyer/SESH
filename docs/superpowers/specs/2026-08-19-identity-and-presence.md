@@ -1,9 +1,12 @@
 # SESH — Identity & Presence
 
 **Date:** 2026-08-19
-**Status:** Proposed. Needs approval before a plan is written.
-**Target:** v1 goal unset. This spec defines the shape; the arc it lands in is
-a separate decision.
+**Status:** **Approved 2026-08-20.** Plan:
+`docs/superpowers/plans/2026-08-20-arc3-identity-and-presence.md`.
+**Target:** **Arc 3 — Identity & Presence.** This spec defines the *shape*: the
+`via` on presence, how signals fuse, and one real signal to prove the fusion is
+not theoretical. The roster, Attract Mode's first draft and per-person profiles
+are things this arc **unblocks rather than delivers**, and land in later arcs.
 **Blocks:** the roster, Attract Mode's honest first draft, per-person profiles,
 and any veto threshold anyone should believe.
 
