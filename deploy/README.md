@@ -339,10 +339,20 @@ Trusted=true
 stored**, so there is no bond to reconnect with — and `Trusted=true` persisting
 is a red herring, because trust without a key cannot reconnect anything.
 
-So the practical rule for this speaker: **it needs re-pairing after it is
-powered off**, and `sesh-pair-speaker` now says so instead of promising
-otherwise. Whether that is the unit's firmware or something fixable has not been
-established.
+**But it is recoverable without the button**, which is the part worth knowing.
+With the speaker powered on and not attached to a phone, a plain connect works:
+
+```sh
+sesh-pair-speaker --reconnect
+```
+
+That connects, re-pins the TV as the default sink — connecting a Bluetooth sink
+steals the default, every time — and restarts librespot so it picks the speaker
+up again. Pairing mode is only needed if that fails.
+
+So the practical rule for this speaker: **it does not come back by itself, but
+it comes back for one command.** Whether the missing link key is the unit's
+firmware or something fixable has not been established.
 
 What still works either way: the sink appears on connect, `seshd` records
 `audio.sink_found`, music routes to it, and losing it degrades to the TV. The

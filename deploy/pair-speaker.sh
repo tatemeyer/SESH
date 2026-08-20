@@ -1,6 +1,7 @@
 #!/bin/sh
 # Pair the room's Bluetooth speaker and route music to it.
 #
+#     sh deploy/pair-speaker.sh --reconnect  # speaker was off; get it back
 #     sh deploy/pair-speaker.sh <MAC>      # pair that device
 #     sh deploy/pair-speaker.sh --scan     # find the MAC first
 #     sh deploy/pair-speaker.sh            # scan, then prompt (needs a terminal)
@@ -67,8 +68,28 @@ scan() {
         | awk '$3 ~ /^([0-9A-F]{2}-){5}[0-9A-F]{2}$/ {print "  " $0}' | head -10
 }
 
+# The bond on this hardware lives in bluetoothd's memory and not on disk, so it
+# is lost on a restart or a long absence — but the device still accepts a plain
+# connect while it is powered on and not attached to something else. That is a
+# one-liner, and it is what to try before reaching for pairing mode.
+reconnect() {
+    MAC="$(sed -n 's/^Environment=PULSE_SINK=bluez_output\.\([^.]*\)\..*/\1/p' "$DROPIN" 2>/dev/null | tr '_' ':')"
+    [ -n "$MAC" ] || fail "no speaker configured yet — pair one first"
+    echo "==> Reconnecting $MAC"
+    if bluetoothctl connect "$MAC" 2>&1 | grep -q "Connection successful"; then
+        HDMI="$(pactl list short sinks | awk -F'\t' '$2 ~ /^alsa_output/ {print $2; exit}')"
+        [ -n "$HDMI" ] && pactl set-default-sink "$HDMI" >/dev/null 2>&1
+        systemctl --user restart sesh-librespot.service 2>/dev/null || true
+        echo "==> Connected, default sink pinned back to the TV, librespot restarted"
+        exit 0
+    fi
+    fail "could not connect $MAC. Is the speaker powered on and not paired to a
+phone? If it still refuses, put it in pairing mode and run: $0 $MAC"
+}
+
 case "${1:-}" in
     --show) show; exit 0 ;;
+    --reconnect) reconnect ;;
     --scan) scan; echo; echo "Then: $0 <MAC>"; exit 0 ;;
 esac
 
@@ -162,10 +183,13 @@ echo
 echo "    $0 --show"
 echo
 echo "Paired: yes  -> good, it will come back by itself from now on."
-echo "Paired: no   -> the bond did not survive. \`Trusted\` alone cannot"
-echo "                reconnect anything; it needs a stored link key. The"
-echo "                Victrola Brighton was observed doing exactly this:"
-echo "                /var/lib/bluetooth/<adapter>/<mac>/info held [General]"
-echo "                and nothing else, where a device that reconnects has"
-echo "                [LinkKey] or [LongTermKey] too. Re-run this script with"
-echo "                the speaker in pairing mode to play again."
+echo "Paired: no   -> the bond did not persist. On the Victrola Brighton it"
+echo "                does not: /var/lib/bluetooth/<adapter>/<mac>/info holds"
+echo "                [General] and nothing else, where a device that comes"
+echo "                back by itself also has [LinkKey] or [LongTermKey]."
+echo
+echo "                This is recoverable without the button. Try:"
+echo "                    $0 --reconnect"
+echo "                which connects, re-pins the TV as the default sink, and"
+echo "                restarts librespot. Only if that fails do you need"
+echo "                pairing mode again."
