@@ -16,6 +16,7 @@
 //! then say *which* producer it came from — see [`via`], and note that this
 //! tracker is only ever the `heartbeat` one.
 
+pub mod fusion;
 pub mod via;
 
 use std::collections::BTreeMap;
@@ -198,3 +199,7 @@ pub async fn sweep_loop(presence: Arc<Presence>, room: Arc<Room>, clock: Arc<dyn
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "fusion_tests.rs"]
+mod fusion_tests;
