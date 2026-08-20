@@ -26,8 +26,8 @@ use serde_json::json;
 
 use crate::clock::Clock;
 use crate::event::{kind, NewEvent};
-use crate::room::Room;
 use crate::presence::via::{Via, VIA};
+use crate::room::Room;
 
 /// How long a phone may go quiet before its owner is considered gone.
 ///

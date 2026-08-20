@@ -298,7 +298,10 @@ mod tests {
             ))
             .unwrap();
 
-        assert_eq!(app.oneshot(request).await.unwrap().status(), StatusCode::CREATED);
+        assert_eq!(
+            app.oneshot(request).await.unwrap().status(),
+            StatusCode::CREATED
+        );
 
         let stored = state.room.events_since(0, -1).unwrap();
         assert_eq!(
