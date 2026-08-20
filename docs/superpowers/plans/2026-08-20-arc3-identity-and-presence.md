@@ -8,9 +8,11 @@ non-heartbeat signal built, so the fusion is exercised rather than theoretical.
 **Spec:** `docs/superpowers/specs/2026-08-19-identity-and-presence.md`
 (merged as PR #32, approved 2026-08-20).
 
-**Status:** **Approved 2026-08-20**, and open. Q3 is answered (carried tags);
-Phases 1–3 need no hardware and are the work in front. Phase 4 waits on tags
-existing, Phase 5 on an ordinary evening.
+**Status:** **Approved 2026-08-20**, and open. Phases 1–3 landed on master the
+same day. **Q3 was answered "carried tags", then reversed to "bonded phones" —
+see the correction below before reading anything about tags as current.** Phase
+4 is next and no longer waits on hardware being bought; Phase 5 waits on an
+ordinary evening.
 
 ---
 
@@ -47,10 +49,11 @@ decision that gets easier once presence is real. Deferred with the roster.
 **Q2 — how deep does profile customization go?** *Not needed.* Profiles are out
 of scope entirely.
 
-**Q3 — which BLE shape does the house adopt?** **Answered 2026-08-20: carried
-tags first, bonded phones as an optional second `via`.** It gated Phase 4, which
-is now planned around tags. The evidence and the reasoning are below, kept
-because the decision is only as good as what it rests on.
+**Q3 — which BLE shape does the house adopt?** **Answered 2026-08-20 as "carried
+tags first", then reversed the same day to "bonded phones first".** It gated
+Phase 4, which is planned around bonded phones. Both the original reasoning and
+the reversal are below, kept because a decision is only as good as what it rests
+on — and that includes showing when what it rested on stopped being true.
 
 ### Q3, with a measurement rather than an argument
 
@@ -86,6 +89,9 @@ That is the spec's constraint, confirmed with an in-dataset control rather than
 assumed: **a passive scan cannot hold a stable per-person identity.** Something
 must be bonded or carried.
 
+> **Superseded — read the reversal that follows this section before acting on
+> anything in it.** Kept because the hole in its reasoning is the useful part.
+
 **Recommendation: tags first, bonded phones as an optional second `via`.**
 
 - A tag advertises a stable address and needs no cooperation from a phone, no
@@ -104,6 +110,45 @@ a guest to do. **Bonded phones remain an available second `via` and are added on
 if tags prove insufficient**, which is a question Phase 5 can answer and no
 argument can.
 
+> ### Reversed, 2026-08-20 — bonded phones lead, tags are the option
+>
+> **The decision above is superseded.** It is left standing rather than edited
+> away, because the interesting part is not which shape won but that the
+> argument for the loser had a hole in it.
+>
+> **1. My strongest objection had already expired when I made it.** The case
+> against bonding rested on BlueZ having cost this project time twice: the
+> `ClassicBondedOnly` rejection in Arc 1, and the agent-lifetime defect where
+> pairing reported success and silently stored no key for weeks. But the second
+> of those was fixed **in #35, by me, hours earlier in the same session**. I
+> counted a bug as evidence against an approach at the moment I removed it. The
+> evidence was gathered before the cause was known, and I did not re-weigh it
+> after fixing it — which is the same failure as quoting a measurement taken
+> under conditions that no longer hold.
+>
+> **2. Nobody has to buy or carry anything.** Every guest already walks in
+> holding the thing. A tag is only free for a resident whose keys are in their
+> pocket; for anybody else it is an object they do not own, and the plan as
+> written blocked Phase 4 on hardware that does not exist yet. "No pairing at
+> the door" was traded against "no phase until something is purchased", and the
+> second cost is larger and was not stated.
+>
+> **3. The pairing ritual is a real cost, accepted deliberately.** It is not
+> free and it is not being waved away. It is **one-time per person, not per
+> visit**, which is a materially different thing from what "a ritual at the
+> front door" implied.
+>
+> **Tags are not dropped.** They remain a supported `via` for anyone who prefers
+> one — the resident case where keys are already in a pocket is still the case
+> where a tag is genuinely nicer. What changes is which one Phase 4 builds
+> first.
+>
+> **Phases 1–3 are unaffected and need no rework.** A bonded phone is
+> `via: ble` exactly as a tag was, so the `via` vocabulary, the
+> attention/presence split and the fusion windows all stand untouched. That
+> they survive a reversal of the signal source is the strongest evidence so far
+> that the seam was drawn in the right place.
+
 ## Shape of the work
 
 Five phases, each landing as its own PR behind a green gate. Ordered so the
@@ -116,7 +161,7 @@ the hard way.
 | 1 | `via` on presence | Every presence row says how it knows | No |
 | 2 | Attention ≠ presence | The two questions separate, callers choose | No |
 | 3 | The fusion projection | Signals → who is here, per-`via` windows | No |
-| 4 | A real BLE signal | `via: ble` from carried tags | **Yes** |
+| 4 | A real BLE signal | `via: ble` from bonded phones | **Yes** |
 | 5 | An ordinary evening | The roster checked against the couch | **Yes, and people** |
 
 ### Phase 1 — `via` on presence
@@ -178,49 +223,64 @@ Settled here, per the spec's *Behaviour to settle*:
 timeline, assert the roster at each step. This is where the logic lives, and it
 is all testable with no network and no radio.
 
-### Phase 4 — a real BLE signal, from carried tags
+### Phase 4 — a real BLE signal, from bonded phones
 
 Emits `presence.arrived { via: "ble", rssi }` through the same `Room::record`
 path as everything else. RSSI is what separates *in this room* from *in this
 apartment*; its threshold is tuned in Phase 5 against a real room, not guessed
 here.
 
-**The signal source is a carried tag with a stable advertising address.** That
-choice buys three things the measurement says matter:
+**The signal source is a phone bonded once to the Pi.** A bond exchanges an
+Identity Resolving Key, and the IRK is what makes a rotating address resolvable
+back to a person — which is the entire difficulty the measurement below
+describes. Everybody already walks in holding a phone, so nothing has to be
+bought, carried, or remembered, and this phase is not blocked on a purchase.
 
-- **No pairing at the door.** A tag needs no cooperation from a phone, no app,
-  and no bond. Nobody's first thirty seconds in the house is a Bluetooth flow.
-- **A stable address**, which is the whole difficulty. 56% of what this flat
-  advertises rotates; a tag simply does not, so recognition is a lookup rather
-  than a resolution problem.
-- **No dependence on the shakiest component in the system.** BlueZ bonding has
-  cost this project time twice.
+**The cost, stated rather than waved away:** a one-time Bluetooth pairing per
+person, at some point that is not necessarily their first thirty seconds in the
+house. **One-time per person, not per visit.** That is the trade, and it is
+accepted deliberately.
 
-What the tag model requires, and must be built rather than assumed:
+What the bonded-phone model requires, and must be built rather than assumed:
 
-- **A registry mapping tag address → person.** This is identity registry data,
-  so it belongs with `people`, where `ALTER TABLE` is permitted and nowhere
-  else. Enrolment is one row and is deliberately not a UI this arc builds.
-- **Matching, never enumerating.** The scanner compares observed addresses
-  against enrolled ones and ignores everything else. It must never build a list
-  of what is in range — that is a surveillance device, and it is also useless,
-  because 340 addresses in 19 minutes is what "everything else" looks like here.
-- **An unenrolled tag is not a person.** No implicit enrolment from proximity.
+- **Enrolment is a bond, not a registry entry.** The pairing itself is the
+  enrolment; what SESH stores is the mapping from resolved identity to person.
+  That is identity data, so it belongs with `people` — the one table Arc 1
+  permits `ALTER TABLE` on, and nowhere else.
+- **Match, never enumerate.** Unchanged from the tag plan and **not
+  negotiable.** The scanner resolves observed addresses against enrolled
+  identities and ignores everything else. It must never build a list of what is
+  in range: that is a surveillance device, and at ~340 addresses per 19 minutes
+  in this flat it is also useless.
+- **An unbonded phone is not a person.** No implicit enrolment from proximity,
+  ever. Walking past the Pi is not consent and is not identification.
+- **Tags remain a supported `via`.** Anyone who would rather carry a tag than
+  bond a phone still can, and the resident case — keys already in a pocket — is
+  where a tag is genuinely the nicer object. The fusion cannot tell them apart
+  and does not need to: both are `via: ble`.
+
+**Land it incrementally, and this is a requirement rather than a nicety: the
+first bonded phone must work before the last one does.** Each person enrols
+independently, everyone else stays on `heartbeat`, and the fusion already
+handles a room where different people are known by different signals. There is
+no flag day and there must not be one.
 
 Two things already measured that this phase must not rediscover:
 
 - A passive scan sees ~340 addresses in 19 minutes in this flat, 56% of them
-  rotating and only 18 of 340 ever giving a name. Matching against known tags is
-  the only thing that works at that density.
+  rotating and only 18 of 340 ever giving a name. Resolving against known
+  identities is the only thing that works at that density.
 - **Killing a scan client mid-discovery latches `Discovering: yes`**, after
   which the adapter silently finds nothing and `scan off` fails with
   `org.bluez.Error.Failed`. Cost two dead ends on 2026-08-20. Whatever holds
   discovery must stop it on every exit path — normal end, signal, and panic.
 
-**Not in this phase:** bonded phones. They stay an available second `via` that
-the fusion already accepts, added only if tags prove insufficient in Phase 5.
-Nothing here forecloses them; that is the point of `via` being a vocabulary
-rather than a flag.
+And one thing learned the hard way, which this phase depends on directly:
+**`bluetoothctl pair` as a one-shot exits before the bond is written**, leaving
+`Paired: yes` that evaporates and no `[LinkKey]` on disk. Fixed in #35; the
+working recipe is in `deploy/README.md` and `deploy/pair-speaker.sh`. Enrolment
+here is the same mechanism against a different class of device, so it starts
+from the fixed version rather than rediscovering the defect.
 
 ### Phase 5 — an ordinary evening
 
@@ -241,9 +301,12 @@ numbers currently in the log.
 3. Attention and presence are separately answerable, and the veto denominator
    uses presence.
 4. The fusion projection is proven over synthetic evenings with no hardware.
-5. A real BLE signal produces `via: ble` rows in the live log on TatePi.
+5. A real BLE signal produces `via: ble` rows in the live log on TatePi, from
+   at least one bonded phone — and **the first bonded phone works while others
+   are still on `heartbeat`**, because a flag day is a failure of this design.
 6. **The 11pm roster matches the people in the room**, checked by looking, with
-   real phones or tags belonging to real people.
+   real phones belonging to real people. A tag standing in for a phone does not
+   close this item: the enrolment path is part of what is being tested.
 7. Gate green at every phase boundary.
 
 Items 5 and 6 are the ones a green suite cannot see. Arc 2 lost its time to
