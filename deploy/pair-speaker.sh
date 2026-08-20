@@ -34,7 +34,9 @@ show() {
         echo "  no speaker is paired. If one used to be, its bond was lost —"
         echo "  re-run this script with the speaker in pairing mode."
     else
-        bluetoothctl info "$SPK" | grep -E "Paired|Trusted|Connected" | sed 's/^\s*/  /'
+        # Bonded is the one that matters: Paired can read yes for a pairing
+        # that stored no link key, and such a pairing does not survive.
+        bluetoothctl info "$SPK" | grep -E "Paired|Bonded|Trusted|Connected" | sed 's/^\s*/  /'
     fi
     echo
     echo "Sinks:"
@@ -107,12 +109,47 @@ bluetoothctl info "$MAC" >/dev/null 2>&1 \
     || fail "$MAC is not visible. Is it still in pairing mode? Most speakers
 leave it after a minute or two. Press the button again and re-run."
 
-# trust before connect: Trusted=yes is what makes it come back by itself after
-# the speaker is powered off and on, which is the normal way a room is used.
+# One bluetoothctl session, held open across the whole handshake.
+#
+# This is load-bearing, and the reason is worth keeping. `bluetoothctl pair`
+# run as a one-shot exits the instant it prints "Pairing successful", taking
+# its pairing agent with it. On the Victrola the bond then never persists:
+# BlueZ reports `Paired: yes` for exactly as long as the connection lasts,
+# writes `[General]` and no `[LinkKey]` to
+# /var/lib/bluetooth/<adapter>/<mac>/info, and the device is back to
+# `Paired: no` afterwards. That was mistaken for the speaker's firmware.
+#
+# Holding one session open — with an explicit agent, and `pairable on` — gets
+# `Bonded: yes` and a real `[LinkKey]` on disk. Verified on TatePi 2026-08-20:
+# the same speaker that would not hold a bond across a disconnect now
+# reconnects without re-pairing.
 echo "==> Pairing, trusting, connecting"
-bluetoothctl pair "$MAC" || fail "pairing failed"
-bluetoothctl trust "$MAC" || fail "could not trust $MAC"
-bluetoothctl connect "$MAC" || fail "could not connect $MAC"
+{
+    echo "agent NoInputNoOutput"
+    echo "default-agent"
+    echo "pairable on"
+    sleep 3
+    echo "pair $MAC"
+    # Do not shorten: the bond is written after "Pairing successful" prints,
+    # and quitting early is precisely the bug this replaced.
+    sleep 25
+    # trust before connect: Trusted=yes is what lets it come back by itself,
+    # but trust without a key cannot reconnect anything — the bond above is
+    # what makes this meaningful.
+    echo "trust $MAC"
+    sleep 2
+    echo "connect $MAC"
+    sleep 8
+    echo "quit"
+} | bluetoothctl >/dev/null 2>&1 || true
+
+# The only question that matters is whether a bond survived. `Paired: yes`
+# alone is not enough — that is true of a pairing that never stored a key.
+bluetoothctl info "$MAC" | grep -qE '^\s*Bonded: yes' \
+    || fail "pairing did not produce a bond.
+Put the speaker back in pairing mode and re-run. If it still fails, check
+'sudo grep -c LinkKey /var/lib/bluetooth/*/$MAC/info' — no key there means
+the bond is not being stored, not that the speaker refused."
 
 echo "==> Waiting for the sink to appear"
 SINK=""
@@ -156,16 +193,17 @@ systemctl --user restart sesh-librespot.service 2>/dev/null || true
 echo
 show
 echo
-echo "Now confirm the bond actually persisted, because on this hardware it may"
-echo "not have. Turn the speaker off and on, wait a few seconds, then:"
+echo "The bond is real: this script checked for \`Bonded: yes\`, which only holds"
+echo "when BlueZ has written a link key to disk. The speaker reconnects by"
+echo "itself from here; you should not need to pair it again."
+echo
+echo "To confirm after a power cycle, turn the speaker off and on, then:"
 echo
 echo "    $0 --show"
 echo
-echo "Paired: yes  -> good, it will come back by itself from now on."
-echo "Paired: no   -> the bond did not survive. \`Trusted\` alone cannot"
-echo "                reconnect anything; it needs a stored link key. The"
-echo "                Victrola Brighton was observed doing exactly this:"
-echo "                /var/lib/bluetooth/<adapter>/<mac>/info held [General]"
-echo "                and nothing else, where a device that reconnects has"
-echo "                [LinkKey] or [LongTermKey] too. Re-run this script with"
-echo "                the speaker in pairing mode to play again."
+echo "Paired: yes  -> as expected."
+echo "Paired: no   -> the bond was lost, which should no longer happen. Check"
+echo "                /var/lib/bluetooth/<adapter>/<mac>/info: a working bond"
+echo "                has a [LinkKey] section, and [General] alone means no key"
+echo "                was stored. Re-run this script with the speaker in"
+echo "                pairing mode, and say so — it would be a new failure."
