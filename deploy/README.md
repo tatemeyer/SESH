@@ -316,9 +316,14 @@ whatever is active when they cannot, warning as they go. A silent speaker is
 better than a broken queue — but a queue playing into a pocket two streets away
 is neither.
 
-### The Victrola does not keep its bond
+### The Victrola keeps its bond — once the agent outlives the pairing
 
-Observed on 2026-08-19, twice, and worth knowing before it wastes an evening:
+> **Corrected 2026-08-20.** This section previously concluded that the speaker
+> needs re-pairing every time it is powered off, and left open whether that was
+> its firmware. It is not the firmware. It was ours, and it is fixed — the text
+> below records the symptom, then the cause and the fix.
+
+Observed on 2026-08-19, twice, and again on 2026-08-20 in seconds:
 **pairing succeeds and then evaporates.** `bluetoothctl pair` reports success,
 `Paired: yes` is true for as long as the connection lasts, and then the device
 comes back `Paired: no` with no bluetoothd restart and nothing in the journal.
@@ -339,14 +344,36 @@ Trusted=true
 stored**, so there is no bond to reconnect with — and `Trusted=true` persisting
 is a red herring, because trust without a key cannot reconnect anything.
 
-So the practical rule for this speaker: **it needs re-pairing after it is
-powered off**, and `sesh-pair-speaker` now says so instead of promising
-otherwise. Whether that is the unit's firmware or something fixable has not been
-established.
+**The cause: the pairing agent died before the bond was written.**
+`pair-speaker.sh` ran `bluetoothctl pair` as a one-shot, and that process exits
+the instant it prints `Pairing successful`, unregistering its agent with it.
+BlueZ had authorised the pairing but never persisted a key, so `Paired: yes`
+was true only for the life of the connection.
 
-What still works either way: the sink appears on connect, `seshd` records
-`audio.sink_found`, music routes to it, and losing it degrades to the TV. The
-fallback covers this — you just have to pair again to get out of the fallback.
+Holding **one** `bluetoothctl` session open across the whole handshake — with
+an explicit `agent NoInputNoOutput` and `pairable on`, and not quitting for
+some seconds after `Pairing successful` — produces `Bonded: yes` and a real
+`[LinkKey]` on disk. `pair-speaker.sh` now does exactly that, and refuses to
+report success unless `Bonded: yes` holds, because `Paired: yes` alone is
+precisely what a pairing that stored no key also reports.
+
+Verified end to end on TatePi, 2026-08-20: bond removed, speaker re-paired by
+the script, `[LinkKey]` written, then disconnected and reconnected **without
+re-pairing**, and the sink came back. `seshd` recorded the matching
+`audio.sink_lost` / `audio.sink_found` pair throughout.
+
+Two traps found while establishing this, both worth not rediscovering:
+
+- **Killing a client mid-discovery latches `Discovering: yes`.** The adapter
+  then rejects `scan off` with `org.bluez.Error.Failed` and silently discovers
+  nothing new, so a speaker sitting in pairing mode two feet away stays
+  invisible. Powering the adapter off and on clears the flag.
+- **`Pairable` does not persist.** It reads `no` after a `bluetoothd` restart
+  or an adapter power cycle, which is why the script sets it every run rather
+  than assuming it.
+
+What works regardless: the sink appears on connect, `seshd` records
+`audio.sink_found`, music routes to it, and losing it degrades to the TV.
 
 ### The vinyl handoff
 
