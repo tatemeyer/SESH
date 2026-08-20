@@ -1,10 +1,53 @@
 # SESH — What The Room Chose
 
 **Date:** 2026-08-19
-**Status:** Proposed. Needs approval before a plan is written.
-**Blocks:** Attract Mode, and the trophy case behind it.
+**Status:** Approved 2026-08-19, then **substantially corrected** the same day —
+read *Correction* below before acting on anything above it.
+**Blocks:** nothing. It was written claiming to block Attract Mode; it does not.
 
 ---
+
+> ## Correction, 2026-08-19
+>
+> **The central claim of this spec is false.** It says of the music rows:
+>
+> > The rows are indistinguishable: same kind, same shape, no actor on either.
+>
+> They are not. Every `music.started` already carries an `entry` — the id of the
+> `music.queued` it came from, or `null` — on all 80 rows in the live log:
+>
+> ```
+>    80  payload keys: ('artist', 'duration_ms', 'entry', 'title')
+>    entry set : 2
+>    entry null: 78
+> ```
+>
+> The distinction this spec proposes adding **is already recorded**, and the
+> "2 of 63" headline was computed by reading exactly the field the spec claims
+> is missing. I derived the statistic from the mechanism and then argued the
+> mechanism did not exist.
+>
+> **What survives:** the ratio is real, and a reader that ignores `entry` would
+> indeed present Spotify's taste as the house's. That is now a *reader*
+> requirement — Attract Mode must filter on `entry` — rather than a gap in the
+> log, and it does not block that arc.
+>
+> **What is still worth doing, at much lower priority:** `entry: null` conflates
+> three different things, because `Conductor::claim` returns `None` whenever it
+> cannot match the track to a queue entry:
+>
+> 1. Spotify autoplay after the queue empties — the common case.
+> 2. **Somebody driving Spotify by hand from their own phone**, which is a
+>    *human* choice the log currently attributes to nobody.
+> 3. A queued track the claim logic failed to match.
+>
+> Case 2 is the interesting one and the reason not to discard this entirely: the
+> room cannot presently tell "nobody chose this" from "someone chose this
+> without using SESH". A `source` would separate them. That is a small,
+> optional improvement, not the blocker this document was written as.
+>
+> The open question at the end — whether the room should keep playing when the
+> queue runs dry — is unaffected and still needs an answer.
 
 ## The measurement
 
