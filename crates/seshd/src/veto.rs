@@ -1,8 +1,17 @@
 //! When a veto wins.
 //!
 //! The rule is "majority veto skips", and the whole question is *majority of
-//! whom*. Without BLE presence the roster is whoever has a phone that has been
-//! seen recently — which the vision already named as the degraded mode.
+//! whom*. The answer is **presence** — who is in the room — and never
+//! *attention*, which is who is looking at their phone this second. They were
+//! the same number for as long as the heartbeat was the only signal, and
+//! conflating them is what Arc 3 exists to fix: a majority of the people
+//! currently staring at a screen is not a majority of the room.
+//!
+//! `present` here is the log-derived roster from
+//! [`Room::roster`](crate::room::Room::roster), which folds `presence.arrived`
+//! and `presence.left` from every producer. See
+//! [`Presence::attentive`](crate::presence::Presence::attentive) for the other
+//! question, and do not pass its result to these functions.
 //!
 //! Kept as one pure function, deliberately apart from the queue projection.
 //! The queue's job is to know what a track's votes are; this decides what they
