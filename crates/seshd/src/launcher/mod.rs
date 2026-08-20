@@ -145,11 +145,20 @@ impl Launcher {
     }
 
     /// Reap forever. Spawned as a background task by `main`.
+    ///
+    /// `reap` takes the `current` mutex and, when an app has exited, writes to
+    /// the log behind it — so it runs on a blocking thread rather than on the
+    /// runtime worker this loop is scheduled on. The lock is shared with
+    /// `launch` and `quit`, which means a reap that arrives mid-launch waits
+    /// out the SIGTERM grace period before it can look.
     pub async fn reap_loop(launcher: Arc<Self>) {
         loop {
             tokio::time::sleep(REAP_INTERVAL).await;
-            if let Err(error) = launcher.reap() {
-                tracing::warn!(%error, "reaper failed");
+            let each = launcher.clone();
+            match tokio::task::spawn_blocking(move || each.reap()).await {
+                Ok(Err(error)) => tracing::warn!(%error, "reaper failed"),
+                Err(join) => tracing::warn!(%join, "reaper task failed to run"),
+                Ok(Ok(())) => {}
             }
         }
     }
