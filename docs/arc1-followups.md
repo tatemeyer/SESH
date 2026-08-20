@@ -5,13 +5,20 @@ the merge gate; all came out of the whole-branch review and its fix wave.
 
 ## Follow-ups, in descending order of value
 
-1. **Move `launch_app`/`quit_app` off the runtime workers.**
-   `crates/seshd/src/api/apps.rs` calls the synchronous `Launcher::launch`/
-   `quit` directly from `async` axum handlers, and `reap_loop` blocks on a
-   `std::sync::Mutex` inside a spawned task. The SIGTERM grace period widened
-   that block from roughly zero to ~2s. With four workers on a Pi 5 and one
-   viewer this is invisible, but `spawn_blocking` (or a dedicated thread) is
-   the correct shape.
+1. ~~**Move `launch_app`/`quit_app` off the runtime workers.**~~ **Resolved
+   2026-08-20.** `crates/seshd/src/api/apps.rs` called the synchronous
+   `Launcher::launch`/`quit` directly from `async` axum handlers, and
+   `reap_loop` blocked on a `std::sync::Mutex` inside a spawned task. The
+   SIGTERM grace period widened that block from roughly zero to ~2s. With four
+   workers on a Pi 5 and one viewer it was invisible, which is why it survived
+   the arc as a follow-up rather than as a bug.
+
+   All three now go through `spawn_blocking`. The property is pinned by
+   `crates/seshd/tests/launcher_offload.rs` rather than argued: on a
+   single-threaded runtime a 10ms ticker counted **zero** ticks across a 600ms
+   launch and a 600ms quit before the change, because nothing else could run
+   at all. The registry lookup that rejects an unknown app id stays on the
+   async side, since it takes no lock and spawns nothing.
 
 2. ~~**Cap and jitter the WebSocket reconnect.**~~ **Resolved 2026-08-20.**
    `surfaces/src/api.ts` retried on a flat 1000ms with no backoff. Against a
@@ -26,6 +33,13 @@ the merge gate; all came out of the whole-branch review and its fix wave.
    `console.error` is now emitted once per *outage* rather than once per
    attempt, which is what actually bounds the console — the backoff alone
    would only have slowed the growth.
+
+   > **Correction.** #34 described this as "the highest-value unresolved item
+   > on that list". It was not: this list is ordered by value, item 1 outranks
+   > it, and item 1 was untouched at the time. It was the highest-value item
+   > *that had a cheap fix in reach*, which is a different and less flattering
+   > claim. Recorded because picking the reachable item and calling it the
+   > most valuable one is exactly how a ranked list stops being ranked.
 
 3. ~~**Record that the SIGTERM test has never executed.**~~ **Resolved
    2026-08-15 on the Pi.** `kill_lets_a_unix_child_run_its_shutdown_path` in
