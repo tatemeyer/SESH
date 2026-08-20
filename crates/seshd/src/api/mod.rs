@@ -250,6 +250,63 @@ mod tests {
         assert_eq!(room.events_since(0, -1).unwrap().len(), 1);
     }
 
+    /// Arc 3 Phase 1's Definition of Done, and the invariant it could most
+    /// easily have broken. `POST /api/events` is an open ingest port: adding a
+    /// `via` vocabulary must not make a presence row from a producer that has
+    /// never heard of it any less valid. Absent stays absent — not defaulted to
+    /// `heartbeat`, which would be a guess written into an append-only log.
+    #[tokio::test]
+    async fn a_presence_row_posted_without_a_via_is_still_valid_and_stays_unknown() {
+        use crate::presence::via::Via;
+
+        let (app, state) = app();
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/events")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"kind":"presence.arrived","actors":["marcus"]}"#,
+            ))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+
+        let stored = state.room.events_since(0, -1).unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].kind, "presence.arrived");
+        assert_eq!(
+            Via::read(&stored[0]),
+            None,
+            "a row that does not say must read as unknown, never as a signal"
+        );
+    }
+
+    /// The other half of an open port: a producer that knows about `via` but
+    /// uses a value this build has never seen keeps its provenance.
+    #[tokio::test]
+    async fn a_presence_row_with_an_unknown_via_keeps_it() {
+        use crate::presence::via::Via;
+
+        let (app, state) = app();
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/events")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"kind":"presence.arrived","actors":["marcus"],"payload":{"via":"doorbell"}}"#,
+            ))
+            .unwrap();
+
+        assert_eq!(app.oneshot(request).await.unwrap().status(), StatusCode::CREATED);
+
+        let stored = state.room.events_since(0, -1).unwrap();
+        assert_eq!(
+            Via::read(&stored[0]),
+            Some(Via::Other("doorbell".to_string()))
+        );
+    }
+
     #[tokio::test]
     async fn get_events_honours_after_and_limit() {
         let (app, state) = app();

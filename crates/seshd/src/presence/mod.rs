@@ -11,15 +11,22 @@
 //! seconds all evening produces two rows, not hundreds — the log records that
 //! someone was here, not that they were still here, again, and again.
 //!
-//! When BLE presence lands in a later arc it becomes a second producer of the
-//! same two kinds, and nothing downstream has to change.
+//! When BLE presence lands it becomes a second producer of the same two kinds,
+//! and nothing downstream has to change. What does change is that the row must
+//! then say *which* producer it came from — see [`via`], and note that this
+//! tracker is only ever the `heartbeat` one.
+
+pub mod via;
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
+use serde_json::json;
+
 use crate::clock::Clock;
 use crate::event::{kind, NewEvent};
 use crate::room::Room;
+use crate::presence::via::{Via, VIA};
 
 /// How long a phone may go quiet before its owner is considered gone.
 ///
@@ -89,7 +96,11 @@ impl Presence {
             return None;
         }
         entry.present = true;
-        Some(NewEvent::new(kind::PRESENCE_ARRIVED).actor(person))
+        Some(
+            NewEvent::new(kind::PRESENCE_ARRIVED)
+                .actor(person)
+                .payload(json!({ VIA: Via::Heartbeat })),
+        )
     }
 
     /// Retire anyone who has gone quiet, returning their departures.
@@ -102,7 +113,9 @@ impl Presence {
             .filter(|(_, state)| state.present && now_ms - state.last_ms >= WINDOW_MS)
             .map(|(person, state)| {
                 state.present = false;
-                NewEvent::new(kind::PRESENCE_LEFT).actor(person)
+                NewEvent::new(kind::PRESENCE_LEFT)
+                    .actor(person)
+                    .payload(json!({ VIA: Via::Heartbeat }))
             })
             .collect()
     }
@@ -153,6 +166,42 @@ mod tests {
 
     fn kinds(events: &[NewEvent]) -> Vec<&str> {
         events.iter().map(|e| e.kind.as_str()).collect()
+    }
+
+    /// The behaviour change this module gained in Arc 3 Phase 1. Every row this
+    /// tracker writes is a heartbeat row and must say so — it is the only
+    /// producer that can honestly claim `heartbeat`, and once BLE and wifi write
+    /// the same two kinds, a row that does not say is indistinguishable from a
+    /// row written before anyone thought to ask.
+    #[test]
+    fn every_row_this_tracker_writes_says_it_came_from_a_heartbeat() {
+        let presence = Presence::new();
+
+        let arrival = presence.beat("sam", T0).expect("first beat is an arrival");
+        assert_eq!(arrival.payload[VIA], "heartbeat");
+
+        let departures = presence.sweep(T0 + WINDOW_MS);
+        assert_eq!(kinds(&departures), vec![kind::PRESENCE_LEFT]);
+        assert_eq!(departures[0].payload[VIA], "heartbeat");
+    }
+
+    /// Guards the seam the fusion projection will read across in Phase 3: what
+    /// this tracker writes must survive `Via::read` as the real thing, not as
+    /// `Other("heartbeat")` or as unknown.
+    #[test]
+    fn what_this_tracker_writes_reads_back_as_heartbeat() {
+        let presence = Presence::new();
+        let arrival = presence.beat("sam", T0).unwrap();
+
+        let recorded = crate::event::Event {
+            id: 1,
+            ts_ms: T0,
+            kind: arrival.kind.clone(),
+            actors: arrival.actors.clone(),
+            subject: arrival.subject.clone(),
+            payload: arrival.payload.clone(),
+        };
+        assert_eq!(Via::read(&recorded), Some(Via::Heartbeat));
     }
 
     #[test]
