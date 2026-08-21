@@ -37,6 +37,11 @@ struct Stub {
     targeted: std::sync::Mutex<Vec<String>>,
     /// Whether each bodyless call carried a Content-Length.
     lengths: std::sync::Mutex<Vec<Option<String>>>,
+    /// Non-zero makes command endpoints answer 200 with a body that is not
+    /// JSON, which is what the real service did on 2026-08-20 and what broke
+    /// the veto in the room. The stub answered 204 to everything before this,
+    /// and 204 is the one answer that could never have caught it.
+    commands_answer_junk: AtomicUsize,
 }
 
 type Shared = Arc<Stub>;
@@ -152,6 +157,16 @@ async fn transfer(State(stub): State<Shared>, Json(body): Json<Value>) -> Respon
 async fn record_length(State(stub): State<Shared>, headers: axum::http::HeaderMap) -> Response {
     if let Some(failure) = scripted_failure(&stub) {
         return failure;
+    }
+    if stub.commands_answer_junk.load(Ordering::SeqCst) > 0 {
+        stub.lengths.lock().unwrap().push(
+            headers
+                .get(axum::http::header::CONTENT_LENGTH)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string),
+        );
+        // A 2xx that is not 204, carrying something that is not JSON.
+        return (StatusCode::OK, "OK").into_response();
     }
     stub.lengths.lock().unwrap().push(
         headers
@@ -475,4 +490,46 @@ async fn calls_without_a_json_body_still_carry_a_content_length() {
             "{call} must send Content-Length: 0, or Spotify answers 411"
         );
     }
+}
+
+/// The bug that broke the queue in the room on 2026-08-20.
+///
+/// Three people were in, two vetoed the playing track — a carried veto — and
+/// the track played to the end anyway. `honour_vetoes` did call `skip`; every
+/// call failed with "parsing Spotify's answer to POST /me/player/next", the
+/// conductor returned early without recording anything, and the next tick tried
+/// again until Spotify answered 429.
+///
+/// The cause is not what Spotify sent. It is that **a command's success
+/// depended on parsing a body no caller reads**: `skip`, `pause`, `play`,
+/// `enqueue`, `resume` and `transfer` all discard the result. Same shape as the
+/// Content-Length bug in #25 — the client failing on the envelope of an
+/// operation that has no content.
+#[tokio::test]
+async fn a_command_succeeds_even_when_the_answer_is_not_json() {
+    let (stub, player, _dir) = serve(false).await;
+    stub.commands_answer_junk.store(1, Ordering::SeqCst);
+
+    player
+        .skip()
+        .await
+        .expect("skip must not fail on a body nobody reads");
+    player
+        .pause()
+        .await
+        .expect("pause must not fail on a body nobody reads");
+}
+
+/// A command that genuinely fails must still fail. The fix above must not
+/// become "ignore everything the server says".
+#[tokio::test]
+async fn a_command_still_fails_on_an_error_status() {
+    let (stub, player, _dir) = serve(false).await;
+    stub.fail_first.store(9, Ordering::SeqCst);
+    stub.fail_status.store(500, Ordering::SeqCst);
+
+    assert!(
+        player.skip().await.is_err(),
+        "a 500 is a real failure and must not be swallowed"
+    );
 }

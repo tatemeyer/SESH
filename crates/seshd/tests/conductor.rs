@@ -288,6 +288,84 @@ async fn a_vetoed_playing_track_is_skipped() {
     assert_eq!(f.room.queue().now_playing(), None);
 }
 
+/// What actually happened in the room on 2026-08-20, at the conductor's level.
+///
+/// Three people in, two vetoes on the playing track — carried — and the track
+/// played to the end. `skip` was failing, and the conductor asked again on
+/// every tick: eight attempts in ninety seconds, until Spotify answered 429 and
+/// took search and playback state down with it.
+///
+/// A veto that cannot be honoured is bad. A veto that cannot be honoured *and*
+/// disables the rest of the room is much worse, so a refused skip now costs a
+/// handful of calls a minute rather than one per tick.
+#[tokio::test]
+async fn a_refused_skip_is_not_retried_on_every_tick() {
+    let f = fixture();
+    f.arrive("sam");
+    f.arrive("marcus");
+    let entry = f.queue("spotify:track:a", "A", "sam");
+    f.speaker("spotify:track:a", 10_000);
+    f.conductor.tick().await;
+
+    f.player
+        .fail_writes_with("parsing Spotify's answer to POST /me/player/next");
+    f.veto(entry, "spotify:track:a", "sam");
+    f.veto(entry, "spotify:track:a", "marcus");
+
+    for _ in 0..12 {
+        f.conductor.tick().await;
+    }
+
+    let attempts = f.player.skips();
+    assert!(
+        attempts < 12,
+        "twelve ticks must not mean twelve skip attempts, got {attempts}"
+    );
+    assert!(
+        attempts >= 2,
+        "it must keep trying rather than give up on the vote, got {attempts}"
+    );
+
+    // Nothing may be recorded: the track really is still playing, and a log
+    // that claims a skip the speaker never performed is worse than a silent one.
+    assert!(
+        f.events(kind::MUSIC_SKIPPED)
+            .into_iter()
+            .all(|e| e.payload["why"] != "vetoed"),
+        "a skip that did not happen must not be recorded"
+    );
+}
+
+/// And once the source recovers, the vote is still standing and is honoured.
+/// The backoff must delay the skip, never cancel it.
+#[tokio::test]
+async fn a_veto_survives_the_source_recovering() {
+    let f = fixture();
+    f.arrive("sam");
+    f.arrive("marcus");
+    let entry = f.queue("spotify:track:a", "A", "sam");
+    f.speaker("spotify:track:a", 10_000);
+    f.conductor.tick().await;
+
+    f.player.fail_writes_with("temporarily broken");
+    f.veto(entry, "spotify:track:a", "sam");
+    f.veto(entry, "spotify:track:a", "marcus");
+    f.conductor.tick().await;
+    assert_eq!(f.room.queue().now_playing().map(|e| e.entry), Some(entry));
+
+    f.player.recover();
+    for _ in 0..12 {
+        f.conductor.tick().await;
+    }
+
+    let vetoed = f
+        .events(kind::MUSIC_SKIPPED)
+        .into_iter()
+        .find(|e| e.payload["why"] == "vetoed")
+        .expect("the vote is still standing and must eventually be honoured");
+    assert_eq!(vetoed.payload["entry"], entry);
+}
+
 #[tokio::test]
 async fn one_vote_short_of_the_threshold_changes_nothing() {
     let f = fixture();

@@ -202,13 +202,17 @@ impl SpotifyPlayer {
     }
 
     /// Send a request, refreshing once on 401 and backing off once on 429.
-    async fn call(
+    ///
+    /// Returns the successful response's body as text, which is very often
+    /// empty. Interpreting it is the caller's business — see [`Self::call`] for
+    /// answers we read and [`Self::command`] for the ones nobody does.
+    async fn send(
         &self,
         method: Method,
         path: &str,
         query: &[(&str, String)],
         body: Option<Value>,
-    ) -> Result<Option<Value>> {
+    ) -> Result<String> {
         let url = format!("{}{path}", self.endpoints.api);
 
         for attempt in 1..=MAX_ATTEMPTS {
@@ -257,22 +261,58 @@ impl SpotifyPlayer {
             // 204 is the ordinary answer to "what is playing" when nothing is,
             // and to every command that succeeded.
             if status == StatusCode::NO_CONTENT {
-                return Ok(None);
+                return Ok(String::new());
             }
 
             let text = response.text().await.unwrap_or_default();
             if !status.is_success() {
                 bail!("Spotify {method} {path} failed ({status}): {text}");
             }
-            if text.trim().is_empty() {
-                return Ok(None);
-            }
-            return Ok(Some(serde_json::from_str(&text).with_context(|| {
-                format!("parsing Spotify's answer to {method} {path}")
-            })?));
+            return Ok(text);
         }
 
         bail!("Spotify {method} {path} did not succeed in {MAX_ATTEMPTS} attempts")
+    }
+
+    /// A call whose answer this client reads.
+    async fn call(
+        &self,
+        method: Method,
+        path: &str,
+        query: &[(&str, String)],
+        body: Option<Value>,
+    ) -> Result<Option<Value>> {
+        let text = self.send(method.clone(), path, query, body).await?;
+        if text.trim().is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(serde_json::from_str(&text).with_context(|| {
+            format!("parsing Spotify's answer to {method} {path}")
+        })?))
+    }
+
+    /// A call whose answer nobody reads.
+    ///
+    /// Every player command — skip, pause, play, enqueue, resume, transfer —
+    /// discards its result, so **the body must not be able to fail the
+    /// command.** It could, and on 2026-08-20 it did: the room carried a veto,
+    /// `skip` returned "parsing Spotify's answer to POST /me/player/next" on a
+    /// 2xx whose body was not JSON, the conductor gave up without recording
+    /// anything, and the track played to the end while the next tick retried
+    /// until Spotify answered 429.
+    ///
+    /// The documented answer to these endpoints is 204. That is not a promise:
+    /// the stub answered 204 to everything, which is exactly why no test could
+    /// see this. An error *status* still fails — what is ignored is only the
+    /// shape of a body that has no readers.
+    async fn command(
+        &self,
+        method: Method,
+        path: &str,
+        query: &[(&str, String)],
+        body: Option<Value>,
+    ) -> Result<()> {
+        self.send(method, path, query, body).await.map(|_| ())
     }
 
     /// The room's Connect device, or `None` if it is not there.
@@ -415,54 +455,49 @@ impl Player for SpotifyPlayer {
     async fn enqueue(&self, uri: &str) -> Result<()> {
         let mut query = vec![("uri", uri.to_string())];
         query.extend(self.room_query().await);
-        self.call(Method::POST, "/me/player/queue", &query, None)
-            .await?;
-        Ok(())
+        self.command(Method::POST, "/me/player/queue", &query, None)
+            .await
     }
 
     async fn play(&self, uri: &str) -> Result<()> {
         // `uris` rather than `context_uri`: a context is an album or playlist,
         // and handing Spotify one would let it carry on into tracks nobody in
         // the room chose once this track ends.
-        self.call(
+        self.command(
             Method::PUT,
             "/me/player/play",
             &self.room_query().await,
             Some(serde_json::json!({ "uris": [uri] })),
         )
-        .await?;
-        Ok(())
+        .await
     }
 
     async fn skip(&self) -> Result<()> {
-        self.call(Method::POST, "/me/player/next", &[], None)
-            .await?;
-        Ok(())
+        self.command(Method::POST, "/me/player/next", &[], None)
+            .await
     }
 
     async fn pause(&self) -> Result<()> {
-        self.call(Method::PUT, "/me/player/pause", &[], None)
-            .await?;
-        Ok(())
+        self.command(Method::PUT, "/me/player/pause", &[], None)
+            .await
     }
 
     async fn resume(&self) -> Result<()> {
         // No body: an empty resume continues the current track rather than
         // restarting it or wandering into a context nobody chose.
-        self.call(Method::PUT, "/me/player/play", &[], None).await?;
-        Ok(())
+        self.command(Method::PUT, "/me/player/play", &[], None)
+            .await
     }
 
     async fn transfer(&self) -> Result<()> {
         let device = self.device_id().await?;
-        self.call(
+        self.command(
             Method::PUT,
             "/me/player",
             &[],
             Some(serde_json::json!({ "device_ids": [device], "play": false })),
         )
-        .await?;
-        Ok(())
+        .await
     }
 }
 
