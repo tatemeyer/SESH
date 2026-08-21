@@ -31,6 +31,16 @@ pub struct Person {
     pub avatar: Option<String>,
     /// When they first joined, in Unix milliseconds.
     pub joined_ms: i64,
+    /// The Bluetooth identity address of a phone or tag bonded to this Pi, if
+    /// this person has enrolled one.
+    ///
+    /// `None` for everybody who has only ever scanned the QR, which is how the
+    /// arc lands incrementally: the first bonded phone works while everyone
+    /// else stays on `heartbeat`.
+    ///
+    /// This is identity-registry data, not a projection, which is why it lives
+    /// here — `people` is the one table Arc 1 permits `ALTER TABLE` on.
+    pub bt_identity: Option<String>,
 }
 
 /// How many `name-2`, `name-3`, ... variants to try before giving up.
@@ -41,7 +51,7 @@ const MAX_ID_ATTEMPTS: u32 = 200;
 const MAX_SLUG_LEN: usize = 32;
 
 /// Columns selected by every read here, in the order [`row_to_person`] expects.
-const COLUMNS: &str = "id, name, avatar, joined_ms";
+const COLUMNS: &str = "id, name, avatar, joined_ms, bt_identity";
 
 fn row_to_person(row: &rusqlite::Row<'_>) -> rusqlite::Result<Person> {
     Ok(Person {
@@ -49,6 +59,7 @@ fn row_to_person(row: &rusqlite::Row<'_>) -> rusqlite::Result<Person> {
         name: row.get(1)?,
         avatar: row.get(2)?,
         joined_ms: row.get(3)?,
+        bt_identity: row.get(4)?,
     })
 }
 
@@ -81,7 +92,10 @@ impl Store {
                         name: name.to_string(),
                         avatar: None,
                         joined_ms,
-                    })
+                        // Joining is a QR scan; enrolling a device is a separate,
+                        // deliberate act. Nobody is enrolled by existing.
+                        bt_identity: None,
+                    });
                 }
                 // Only an id collision is worth retrying. Matching the column
                 // name matters: a token collision would otherwise burn all 200
@@ -109,6 +123,49 @@ impl Store {
     /// Look someone up by id.
     pub fn person_by_id(&self, id: &str) -> Result<Option<Person>> {
         self.person_where("id = ?1", id)
+    }
+
+    /// Bind a bonded device's identity address to a person.
+    ///
+    /// Enrolment is the *bond*; this records who it belongs to. Deliberately
+    /// explicit and never inferred: an unbonded phone is not a person, and no
+    /// amount of walking past the Pi may enrol anybody.
+    ///
+    /// Addresses are normalised to upper case, so `bluetoothctl`'s output and a
+    /// hand-typed one are the same key.
+    pub fn enrol_device(&self, person_id: &str, address: &str) -> Result<()> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let changed = conn.execute(
+            "UPDATE people SET bt_identity = ?2 WHERE id = ?1",
+            rusqlite::params![person_id, address.to_uppercase()],
+        )?;
+        if changed == 0 {
+            anyhow::bail!("no person with id {person_id}");
+        }
+        Ok(())
+    }
+
+    /// Who a bonded device belongs to, if anybody.
+    ///
+    /// `None` means *not enrolled*, and a caller must read that as "not a
+    /// person" rather than "someone we have not met yet". That is the whole of
+    /// match-never-enumerate: a device the house does not know is not a
+    /// stranger to be catalogued, it is nothing at all.
+    pub fn person_by_device(&self, address: &str) -> Result<Option<Person>> {
+        self.person_where("bt_identity = ?1", &address.to_uppercase())
+    }
+
+    /// Every enrolled device, as `(address, person id)`.
+    ///
+    /// The scanner holds this and matches against it. It is the only list of
+    /// Bluetooth addresses SESH ever builds, and it contains exactly the people
+    /// who chose to be in it.
+    pub fn enrolled_devices(&self) -> Result<Vec<(String, String)>> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let mut stmt =
+            conn.prepare("SELECT bt_identity, id FROM people WHERE bt_identity IS NOT NULL")?;
+        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     fn person_where(&self, predicate: &str, value: &str) -> Result<Option<Person>> {
@@ -194,9 +251,20 @@ pub(super) fn migrate(conn: &Connection) -> Result<()> {
         // true, rather than inventing the moment the upgrade happened.
         conn.execute_batch("ALTER TABLE people ADD COLUMN joined_ms INTEGER NOT NULL DEFAULT 0")?;
     }
+    if !has("bt_identity") {
+        // Nullable on purpose. Nobody is enrolled until they bond a device, and
+        // an unenrolled person is not a lesser person — they are on `heartbeat`,
+        // which is the floor and stays the floor.
+        conn.execute_batch("ALTER TABLE people ADD COLUMN bt_identity TEXT")?;
+    }
     // NULLs compare distinct in a SQLite unique index, so the pre-migration
     // rows that have no token do not collide with each other.
     conn.execute_batch("CREATE UNIQUE INDEX IF NOT EXISTS idx_people_token ON people(token)")?;
+    // One device belongs to one person. Two people claiming the same address
+    // would make presence ambiguous in the one place it must not be.
+    conn.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_people_bt_identity ON people(bt_identity)",
+    )?;
     Ok(())
 }
 
@@ -263,6 +331,86 @@ mod tests {
         let people = store.people().unwrap();
         assert_eq!(people.len(), 1, "the pre-existing row must survive");
         assert_eq!(people[0].name, "Tate");
+    }
+
+    /// Placeholder. Not anyone's real device — the repo is public and a
+    /// Bluetooth identity address is a durable handle on a person.
+    const A_PHONE: &str = "AA:BB:CC:00:00:01";
+
+    #[test]
+    fn enrolling_binds_a_device_to_a_person() {
+        let store = Store::open_in_memory().unwrap();
+        let sam = store.insert_person("Sam", "t1").unwrap();
+        assert_eq!(sam.bt_identity, None, "joining does not enrol anybody");
+
+        store.enrol_device(&sam.id, A_PHONE).unwrap();
+
+        let found = store.person_by_device(A_PHONE).unwrap().expect("enrolled");
+        assert_eq!(found.id, sam.id);
+        assert_eq!(found.bt_identity.as_deref(), Some(A_PHONE));
+    }
+
+    #[test]
+    fn a_device_lookup_ignores_case() {
+        let store = Store::open_in_memory().unwrap();
+        let sam = store.insert_person("Sam", "t1").unwrap();
+        store
+            .enrol_device(&sam.id, &A_PHONE.to_lowercase())
+            .unwrap();
+
+        assert!(store.person_by_device(A_PHONE).unwrap().is_some());
+        assert!(store
+            .person_by_device(&A_PHONE.to_lowercase())
+            .unwrap()
+            .is_some());
+    }
+
+    /// The privacy property at the storage layer: an address nobody enrolled
+    /// resolves to nobody, rather than to a new or partial person.
+    #[test]
+    fn an_unenrolled_device_belongs_to_nobody() {
+        let store = Store::open_in_memory().unwrap();
+        store.insert_person("Sam", "t1").unwrap();
+
+        assert!(store
+            .person_by_device("AA:BB:CC:FF:FF:FF")
+            .unwrap()
+            .is_none());
+        assert!(store.enrolled_devices().unwrap().is_empty());
+    }
+
+    #[test]
+    fn one_device_cannot_belong_to_two_people() {
+        // Presence would be ambiguous in the one place it must not be.
+        let store = Store::open_in_memory().unwrap();
+        let sam = store.insert_person("Sam", "t1").unwrap();
+        let marcus = store.insert_person("Marcus", "t2").unwrap();
+
+        store.enrol_device(&sam.id, A_PHONE).unwrap();
+        assert!(
+            store.enrol_device(&marcus.id, A_PHONE).is_err(),
+            "the unique index must refuse a second claim on one device"
+        );
+    }
+
+    #[test]
+    fn enrolling_a_person_who_does_not_exist_is_an_error() {
+        let store = Store::open_in_memory().unwrap();
+        assert!(store.enrol_device("nobody", A_PHONE).is_err());
+    }
+
+    #[test]
+    fn enrolled_devices_lists_only_the_enrolled() {
+        let store = Store::open_in_memory().unwrap();
+        let sam = store.insert_person("Sam", "t1").unwrap();
+        store.insert_person("Marcus", "t2").unwrap();
+        store.enrol_device(&sam.id, A_PHONE).unwrap();
+
+        assert_eq!(
+            store.enrolled_devices().unwrap(),
+            vec![(A_PHONE.to_string(), sam.id.clone())],
+            "the only address list SESH holds, and everybody in it opted in"
+        );
     }
 
     #[test]

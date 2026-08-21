@@ -16,6 +16,7 @@
 //! then say *which* producer it came from — see [`via`], and note that this
 //! tracker is only ever the `heartbeat` one.
 
+pub mod ble;
 pub mod fusion;
 pub mod via;
 
