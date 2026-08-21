@@ -127,6 +127,7 @@ pub struct MockPlatform {
     running: Mutex<HashSet<Pid>>,
     spawned: Mutex<Vec<(String, Vec<String>)>>,
     fail_next_kill: Mutex<bool>,
+    fail_next_spawn: Mutex<bool>,
 }
 
 impl MockPlatform {
@@ -162,6 +163,19 @@ impl MockPlatform {
             .remove(&pid);
     }
 
+    /// Make the next spawn fail, the way a missing binary or an exhausted
+    /// process table does.
+    ///
+    /// Added by the #48 audit: this double could fail a `kill` but never a
+    /// `spawn`, so `Launcher::launch`'s error path — and the 500 the API
+    /// returns from it — had never once been executed.
+    pub fn fail_next_spawn(&self) {
+        *self
+            .fail_next_spawn
+            .lock()
+            .expect("fail_next_spawn mutex poisoned") = true;
+    }
+
     /// Make the next call to `kill` return an error instead of succeeding.
     /// The flag is one-shot: it resets after the next `kill` call, whether
     /// or not that call was actually reached.
@@ -178,6 +192,19 @@ impl Platform for MockPlatform {
         if program.is_empty() {
             return Err(anyhow!("empty program name"));
         }
+        // The realistic failure: the binary is not there, or the process table
+        // is full. An empty program name was the only way to make this fail
+        // before, and the app registry cannot produce one — so the path was
+        // unreachable from any test that went through the launcher.
+        let mut fail_next = self
+            .fail_next_spawn
+            .lock()
+            .expect("fail_next_spawn mutex poisoned");
+        if *fail_next {
+            *fail_next = false;
+            return Err(anyhow!("simulated spawn failure"));
+        }
+        drop(fail_next);
         let mut next = self.next_pid.lock().expect("next_pid mutex poisoned");
         *next += 1;
         let pid = *next;

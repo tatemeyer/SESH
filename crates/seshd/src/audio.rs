@@ -17,7 +17,7 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 
 use crate::event::{kind, NewEvent};
 use crate::player::Player;
@@ -49,8 +49,32 @@ impl Sinks for PactlSinks {
             .args(["list", "short", "sinks"])
             .output()
             .context("running pactl")?;
-        Ok(parse_sinks(&String::from_utf8_lossy(&output.stdout)))
+
+        interpret_pactl(
+            output.status.success(),
+            &String::from_utf8_lossy(&output.stdout),
+            &String::from_utf8_lossy(&output.stderr),
+        )
     }
+}
+
+/// Turn a finished `pactl` into sink names, or an error.
+///
+/// Split out from the process call for one reason: **the status check is the
+/// whole defect, and inside `PactlSinks` it cannot be reached by a test.**
+///
+/// `pactl` that fails — PipeWire not up yet, the socket gone, the session not
+/// ours — writes nothing to stdout, and an empty stdout parses to an empty sink
+/// list. Reporting that as success makes "the query failed" indistinguishable
+/// from "there are no sinks", and the watcher turns the second into
+/// `audio.sink_lost`: the room announcing the speaker left because it could not
+/// ask. The same distinction Arc 3's fusion is built on — no answer is not a
+/// negative answer.
+pub fn interpret_pactl(success: bool, stdout: &str, stderr: &str) -> Result<Vec<String>> {
+    if !success {
+        bail!("pactl failed: {}", stderr.trim());
+    }
+    Ok(parse_sinks(stdout))
 }
 
 /// Pull sink names out of `pactl list short sinks`.
@@ -68,6 +92,7 @@ pub fn parse_sinks(stdout: &str) -> Vec<String> {
 /// Sinks a test hands over directly.
 pub struct MockSinks {
     names: std::sync::Mutex<Vec<String>>,
+    failure: std::sync::Mutex<Option<String>>,
 }
 
 impl MockSinks {
@@ -75,7 +100,23 @@ impl MockSinks {
     pub fn new(names: &[&str]) -> Self {
         Self {
             names: std::sync::Mutex::new(names.iter().map(|s| s.to_string()).collect()),
+            failure: std::sync::Mutex::new(None),
         }
+    }
+
+    /// Make the next look fail, the way a `pactl` that cannot reach PipeWire
+    /// does.
+    ///
+    /// This exists because the double could not previously express it, and a
+    /// double that can only give the documented answer cannot catch a caller
+    /// that mishandles any other one.
+    pub fn fail_with(&self, message: impl Into<String>) {
+        *self.failure.lock().expect("mock sinks poisoned") = Some(message.into());
+    }
+
+    /// Stop failing.
+    pub fn recover(&self) {
+        *self.failure.lock().expect("mock sinks poisoned") = None;
     }
 
     /// Replace what the next look will find.
@@ -87,6 +128,9 @@ impl MockSinks {
 
 impl Sinks for MockSinks {
     fn names(&self) -> Result<Vec<String>> {
+        if let Some(failure) = self.failure.lock().expect("mock sinks poisoned").as_ref() {
+            bail!("mock sinks failure: {failure}");
+        }
         Ok(self.names.lock().expect("mock sinks poisoned").clone())
     }
 }
@@ -225,6 +269,105 @@ mod tests {
 
     fn names(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// The bug this file had until 2026-08-21, found by auditing what the
+    /// doubles could not express.
+    ///
+    /// `PactlSinks::names` ignored the exit status. A `pactl` that fails —
+    /// PipeWire not up yet, socket gone, session not ours — writes nothing to
+    /// stdout, empty stdout parses to an empty sink list, and `Ok(vec![])` is
+    /// indistinguishable from "there are no sinks". The watcher turned that
+    /// into `audio.sink_lost`: **the room announcing the speaker left because
+    /// it could not ask.**
+    ///
+    /// The loop was always written for this — it warns and skips on `Err` — so
+    /// the whole defect was the one `Ok` that should have been an error. And
+    /// `MockSinks` could not fail, so nothing could have caught it.
+    ///
+    /// Same distinction Arc 3's fusion is built on: no answer is not the same
+    /// as a negative answer.
+    #[tokio::test(start_paused = true)]
+    async fn a_failed_look_is_not_a_departure() {
+        use crate::room::Room;
+        use crate::store::Store;
+
+        let room = Room::new(Store::open_in_memory().unwrap()).unwrap();
+        let sinks = std::sync::Arc::new(MockSinks::new(&[HDMI, VICTROLA]));
+        let watcher = tokio::spawn(watch_loop(
+            sinks.clone(),
+            room.clone(),
+            None,
+            "bluez_output.".to_string(),
+        ));
+
+        // Let it seed on a room where the speaker is present.
+        tokio::time::advance(WATCH_INTERVAL * 2).await;
+        tokio::task::yield_now().await;
+
+        // Now the query itself breaks. The speaker has not moved.
+        sinks.fail_with("Connection refused");
+        for _ in 0..5 {
+            tokio::time::advance(WATCH_INTERVAL).await;
+            tokio::task::yield_now().await;
+        }
+        watcher.abort();
+
+        let lost: Vec<_> = room
+            .events_since(0, -1)
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.kind == kind::AUDIO_SINK_LOST)
+            .collect();
+        assert!(
+            lost.is_empty(),
+            "a look that failed must not be reported as the speaker leaving, got {lost:?}"
+        );
+    }
+
+    /// The defect itself, at the only seam where it is reachable.
+    ///
+    /// The first version of the test above used `MockSinks` and so exercised
+    /// the *loop's* handling of `Err` — which was already correct before the
+    /// fix. It would have passed against the broken code. This one fails
+    /// against it, because the broken code answered `Ok(vec![])` here.
+    #[test]
+    fn a_pactl_that_failed_is_an_error_not_an_empty_room() {
+        // Exactly the shape the bug produced: non-zero exit, nothing on stdout.
+        let silent_failure = interpret_pactl(false, "", "");
+        assert!(
+            silent_failure.is_err(),
+            "a failed pactl wrote no sinks; that is not the same as no sinks existing"
+        );
+
+        assert!(interpret_pactl(false, "", "Connection refused").is_err());
+
+        // And success still parses.
+        let stdout = "66\tbluez_output.E9_FE_A0_81_8C_E0.1\tPipeWire\ts16le\tRUNNING\n";
+        assert_eq!(
+            interpret_pactl(true, stdout, "").unwrap(),
+            names(&[VICTROLA])
+        );
+
+        // A genuinely empty room is still empty, not an error.
+        assert!(interpret_pactl(true, "", "").unwrap().is_empty());
+    }
+
+    /// And the double must actually be able to fail, or the test above is
+    /// theatre. Guards the capability itself.
+    #[test]
+    fn the_sink_double_can_fail_the_way_the_real_one_does() {
+        let sinks = MockSinks::new(&[HDMI]);
+        assert!(sinks.names().is_ok());
+
+        sinks.fail_with("Connection refused");
+        assert!(
+            sinks.names().is_err(),
+            "a double that cannot fail cannot catch a caller that mishandles failure"
+        );
+
+        sinks.recover();
+        assert_eq!(sinks.names().unwrap(), names(&[HDMI]));
     }
 
     #[test]

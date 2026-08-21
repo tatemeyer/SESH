@@ -99,6 +99,38 @@ describe("connectEvents", () => {
     expect(close).toHaveBeenCalled();
   });
 
+  it("a frame it cannot parse does not tear the feed down", () => {
+    // Found by the #48 audit: `api.ts` has a catch for an unparseable frame
+    // and nothing exercised it, because the fake socket only ever delivered
+    // well-formed JSON — a double that gives only the documented answer.
+    //
+    // The property that matters is not the log line. It is that the *next*
+    // frame still arrives: on the TV there is no console to read, so a feed
+    // that silently stopped would look exactly like a quiet room.
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    let onmessage: ((e: { data: string }) => void) | null = null;
+    const FakeWs = vi.fn(function (this: Record<string, unknown>) {
+      this.close = vi.fn();
+      Object.defineProperty(this, "onmessage", {
+        set: (fn) => { onmessage = fn; },
+      });
+    });
+
+    const received: unknown[] = [];
+    connectEvents((e) => received.push(e), FakeWs as unknown as typeof WebSocket);
+
+    onmessage!({ data: "{not json at all" });
+    expect(received).toHaveLength(0);
+    expect(error).toHaveBeenCalledTimes(1);
+
+    // The feed is still live.
+    onmessage!({ data: JSON.stringify({ id: 2, kind: "music.started" }) });
+    expect(received).toHaveLength(1);
+    expect((received[0] as { kind: string }).kind).toBe("music.started");
+
+    vi.restoreAllMocks();
+  });
+
   it("reconnects after the socket closes and re-fetches on the new socket", () => {
     vi.useFakeTimers();
     const { FakeWs, handlers } = fakeSockets();

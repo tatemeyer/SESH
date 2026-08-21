@@ -35,6 +35,12 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
 futures-util = "0.3"
+# A feature on a crate already depended on, not a new dependency. `test-util`
+# gives paused time, without which the loops here cannot be tested at all: the
+# audio watch ticks every 5s and the presence sweep every 60s, so a real-time
+# test is either minutes long or absent. It was absent, which is how a failed
+# `pactl` came to be reported as the speaker leaving the room.
+tokio = { version = "1", features = ["test-util"] }
 http-body-util = "0.1"
 tempfile = "3"
 tokio-tungstenite = "0.21"

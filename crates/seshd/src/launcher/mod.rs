@@ -390,6 +390,37 @@ mod tests {
         }
     }
 
+    /// The #48 audit's other finding: `Launcher::launch`'s failure path had
+    /// never executed, because the double could not fail a spawn in any way the
+    /// registry could reach.
+    #[test]
+    fn a_spawn_that_fails_is_surfaced_and_leaves_nothing_running() {
+        let (launcher, platform, room) = fixture();
+        platform.fail_next_spawn();
+
+        let error = launcher
+            .launch("kodi")
+            .expect_err("a failed spawn must be an error");
+        assert!(
+            error.to_string().contains("spawn"),
+            "the error should say what failed, got {error}"
+        );
+
+        assert_eq!(
+            launcher.current(),
+            None,
+            "nothing may be left marked running"
+        );
+        assert!(platform.running_pids().is_empty());
+        assert!(
+            room.events_since(0, -1)
+                .unwrap()
+                .iter()
+                .all(|e| e.kind != kind::APP_LAUNCHED),
+            "a launch that did not happen must not be recorded"
+        );
+    }
+
     #[test]
     fn concurrent_launches_never_orphan_a_process() {
         let inner = Arc::new(MockPlatform::new());
