@@ -75,3 +75,34 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run build
+
+  # The one name branch protection requires.
+  #
+  # Requiring `rust` and `surfaces` directly would work today and break the
+  # moment either gains a path filter: a docs-only PR would skip the job, the
+  # required check would never report, and the PR would wait forever with no
+  # error to read. That is Parallax #43. So the rule is never require a job that
+  # can be filtered — require an aggregator that always runs.
+  #
+  # `if: always()` is what makes it always report. It fails only on a real
+  # failure: a skipped dependency is not a failure, it is a job that correctly
+  # had nothing to do.
+  gate:
+    name: gate
+    if: always()
+    needs: [rust, surfaces]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Both halves must have passed
+        env:
+          RUST: ${{ needs.rust.result }}
+          SURFACES: ${{ needs.surfaces.result }}
+        run: |
+          echo "rust=$RUST surfaces=$SURFACES"
+          for result in "$RUST" "$SURFACES"; do
+              case "$result" in
+                  success|skipped) ;;
+                  *) echo "::error::a half of the gate did not pass"; exit 1 ;;
+              esac
+          done
+          echo "gate green"

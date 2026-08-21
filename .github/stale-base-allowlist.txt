@@ -1,0 +1,13 @@
+# Stale-base / stranded-merge allowlist.
+#
+# One PR per line, keyed as "#<number>". Add an entry ONLY after confirming on
+# the default branch that the work actually shipped — "the PR says merged" is
+# not evidence, and being told otherwise is what this guard exists to catch.
+#
+# All three below merged into a stacked parent rather than into master, and all
+# three shipped anyway. Each was verified by reading master, not by trusting the
+# PR state.
+
+#13 Arc 2 Phase 3, the Player seam. Merged into worktree-arc2-phase2. Verified: `impl Player for SpotifyPlayer` is on master.
+#39 Arc 3 Phase 1, `via` on presence rows. Merged into worktree-arc3-q3. Verified: presence/via.rs and `Via::read` are on master, carried there by the recovery merge in #43 (fda2c32).
+#40 Arc 3 Phase 2, the attention/presence split. Merged into worktree-arc3-p1. Verified: `ATTENTION_MS` is in presence/mod.rs on master, same route.
