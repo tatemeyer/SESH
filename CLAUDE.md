@@ -69,6 +69,18 @@ suite is green, never that the room works, so every arc still closes on the Pi.
   the fix and watch the test fail, or test at a seam where the defect is
   actually reachable. Where a real failure was observed, reproduce its error
   verbatim.
+- **Always open PRs against the default branch.** A stacked PR strands its upper
+  half: it merges into its parent, displays **MERGED**, CI passes, and never
+  reaches `master`. There is no GitHub signal for this — no notification, no
+  failing check, no state change. It has happened four times across three repos,
+  here as Arc 3 Phases 1–3, caught only by grepping `master` for a symbol they
+  introduced. `.github/workflows/branch-hygiene.yml` now fails any PR that does
+  not target `master`, and audits nightly for merges that never landed.
+
+  **When a parent squash-merges, do not rebase the child.** The squash rewrote
+  the parent's commits, so a child still carrying the originals collides
+  `add/add` on every file the parent added. Re-create the branch from `master`
+  and cherry-pick only the child's own commits.
 - **Conventional Commits**: `type(scope): description`. A `feat`/`fix` whose
   motivation isn't obvious from the subject gets a 1–2 sentence body saying
   *why*. Agent commits carry the harness's `Co-Authored-By`/`Claude-Session`

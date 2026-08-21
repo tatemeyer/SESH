@@ -1,0 +1,66 @@
+name: Branch hygiene
+
+# Guards the stale-base / stranded-merge failure in issue #94, which has now occurred four times
+# across three repos (Model-Experiments #26/#86/#88, SESH #39-#41, Parallax #44).
+#
+# Two jobs, because the two triggers answer different questions and must not be conflated:
+#
+#   base-is-default (pull_request) -- "does *this* PR target the default branch?" Scoped strictly
+#       to the PR being built, so a finding about some other PR can never put a red X on this one.
+#       Fires while retargeting is still a one-click fix.
+#
+#   audit (schedule/dispatch)      -- "is the repository as a whole in a good state?" The failure
+#       mode in #94 is *silence*: a stranded merge produces no notification, no failing check, and
+#       a PR that displays as MERGED. The SESH instance went unnoticed until someone grepped
+#       master for a symbol the phases introduced. Only a clock catches that.
+#
+# Neither is a required status check. `base-is-default` could reasonably become one later; the
+# audit must not, since it reports on repository state rather than on the diff.
+
+on:
+  schedule:
+    - cron: "17 13 * * *" # daily, off the hour to dodge GitHub's peak-of-hour scheduling backlog
+  pull_request:
+    types: [opened, reopened, edited, synchronize]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  base-is-default:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      # No checkout needed: the base ref and the default branch both come from the event payload,
+      # so this stays a couple of seconds and adds no meaningful cost to every PR.
+      - name: PR must target the default branch
+        env:
+          BASE: ${{ github.base_ref }}
+          DEFAULT: ${{ github.event.repository.default_branch }}
+        run: |
+          if [ "$BASE" != "$DEFAULT" ]; then
+            echo "::error::This PR targets '$BASE', not the default branch '$DEFAULT'."
+            echo "Stacked PRs strand their upper halves when the parent squash-merges (issue #94)."
+            echo "Retarget to '$DEFAULT'. If the parent has already squash-merged, do NOT rebase --"
+            echo "re-create this branch from '$DEFAULT' and cherry-pick only this PR's own commits,"
+            echo "or every file the parent added will collide add/add."
+            exit 1
+          fi
+          echo "base '$BASE' is the default branch"
+
+  audit:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Check B compares merge commits against the default branch with `git merge-base`, which
+          # needs real history -- a shallow clone would report every merge as stranded.
+          fetch-depth: 0
+
+      - name: Audit for stale-base PRs and stranded merges
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: .github/scripts/branch_hygiene.sh "${{ github.repository }}"
