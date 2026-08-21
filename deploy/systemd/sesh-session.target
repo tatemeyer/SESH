@@ -1,0 +1,16 @@
+[Unit]
+# What the room needs running once the display is up.
+#
+# This exists because `graphical-session.target` cannot be used for it. That
+# target is `RefuseManualStart=yes` — "may be requested by dependency only" —
+# so nothing can activate it by hand, and on this Pi nothing activates it at
+# all: there is no display manager, and labwc does not. Units hung off it are
+# therefore decorative. `systemctl --user enable seshd` reports success, writes
+# a symlink into a target that never runs, and starts nothing. That was the
+# state this box was found in, and the room only came back because one line of
+# shell started seshd directly.
+#
+# So: a target this project owns and labwc's autostart really does start, which
+# makes `enable` mean what it says and gives the units a real lifecycle — stop
+# this target and everything in it stops.
+Description=SESH room session

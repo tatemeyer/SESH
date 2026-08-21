@@ -3,8 +3,13 @@ Description=SESH room daemon
 # Started by labwc's autostart once the compositor is up, so the environment
 # it inherits already has WAYLAND_DISPLAY. Do not convert this to a system
 # unit: apps seshd spawns would then have no display to appear on.
-After=graphical-session.target
-PartOf=graphical-session.target
+# Not graphical-session.target. Nothing activates it on this Pi — no display
+# manager, and labwc does not — and nothing can be made to, because it is
+# RefuseManualStart=yes. Ordering and lifecycle hung off it are inert, which
+# is why `enable` here used to start nothing at all. sesh-session.target is
+# started by labwc's autostart, after the Wayland environment is imported, so
+# both of these mean something.
+PartOf=sesh-session.target
 
 [Service]
 Type=simple
@@ -18,4 +23,7 @@ RestartSec=2
 Environment=RUST_LOG=seshd=info
 
 [Install]
-WantedBy=graphical-session.target
+# Real: labwc's autostart starts sesh-session.target, so enabling this unit
+# actually starts it. install.sh writes this link so it is not a hand-run
+# command that one Pi has and the next does not.
+WantedBy=sesh-session.target
