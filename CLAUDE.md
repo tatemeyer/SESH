@@ -58,6 +58,17 @@ suite is green, never that the room works, so every arc still closes on the Pi.
 - **TDD.** Write the failing test, run it and watch it fail, then implement.
   Never weaken or delete a test to make a suite green — if a test encodes the
   wrong expectation, say so and explain why before changing it.
+- **A test double must be able to fail the way the real thing fails.** If the
+  real dependency can return an error status, hand back malformed data, or fail
+  the query outright, the double needs a mode for it and at least one test must
+  use it. A double built from the documentation encodes what a service
+  *promises*, not what it *does*, and this project's worst bugs have all lived
+  in that gap — a stub answering `204` to everything hid the veto failure that
+  sent a room to Spotify Jam. Evidence: `docs/test-double-audit.md`.
+- **A test that passes against the broken code is not testing the fix.** Break
+  the fix and watch the test fail, or test at a seam where the defect is
+  actually reachable. Where a real failure was observed, reproduce its error
+  verbatim.
 - **Conventional Commits**: `type(scope): description`. A `feat`/`fix` whose
   motivation isn't obvious from the subject gets a 1–2 sentence body saying
   *why*. Agent commits carry the harness's `Co-Authored-By`/`Claude-Session`
