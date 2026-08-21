@@ -99,7 +99,23 @@ struct Inner {
     pushed: Option<i64>,
     /// Last progress seen, to catch a track restarting at the same URI.
     last_progress_ms: i64,
+    /// A veto-skip that failed, and how many ticks to sit out before retrying.
+    ///
+    /// Without this the conductor asks the source to skip the same track on
+    /// every tick for as long as it keeps failing. On 2026-08-20 that turned
+    /// one broken skip into a rate-limited player: eight attempts in ninety
+    /// seconds, then 429s, which take out search and playback state too. A
+    /// veto that cannot be honoured is bad; a veto that cannot be honoured and
+    /// disables the rest of the room is much worse.
+    skip_backoff: u32,
 }
+
+/// Ticks to wait before retrying a veto-skip the source refused.
+///
+/// Long enough that a persistent failure costs a handful of calls a minute
+/// rather than one per tick, short enough that a transient one still resolves
+/// inside the track it was voted against.
+const SKIP_BACKOFF_TICKS: u32 = 5;
 
 /// Drives the music source from the queue.
 pub struct Conductor {
@@ -222,12 +238,26 @@ impl Conductor {
 
         if let Some(playing) = queue.now_playing() {
             if veto::should_skip(&playing.vetoes, &present) {
+                // Sitting out a tick after a failure, so a source that is
+                // refusing does not get hammered into rate-limiting us.
+                if inner.skip_backoff > 0 {
+                    inner.skip_backoff -= 1;
+                    return;
+                }
                 // Tell the source first: recording a skip the speaker never
                 // performed would leave the log lying about the room.
                 if let Err(error) = self.player.skip().await {
-                    tracing::warn!(%error, "could not skip a vetoed track");
+                    inner.skip_backoff = SKIP_BACKOFF_TICKS;
+                    tracing::warn!(
+                        %error,
+                        entry = playing.entry,
+                        backoff_ticks = SKIP_BACKOFF_TICKS,
+                        "could not skip a vetoed track; the room voted and the \
+                         track is still playing"
+                    );
                     return;
                 }
+                inner.skip_backoff = 0;
                 self.record_skipped(playing.entry, &playing.uri, "vetoed");
                 inner.last_progress_ms = 0;
             }
