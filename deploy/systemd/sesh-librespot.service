@@ -7,8 +7,9 @@
 # it would play to nothing and look like a broken speaker. install.sh masks the
 # packaged unit for that reason.
 Description=SESH Spotify Connect endpoint (librespot)
-After=graphical-session.target
-PartOf=graphical-session.target
+# See the note where [Install] would be: started by autostart, last.
+# PartOf so that stopping the room's session stops the music with it.
+PartOf=sesh-session.target
 
 [Service]
 Type=simple
@@ -43,5 +44,13 @@ Environment=PULSE_SINK=
 Restart=always
 RestartSec=5
 
-[Install]
-WantedBy=graphical-session.target
+# Deliberately no [Install] section.
+#
+# This unit is started by labwc's autostart, last, after Chromium — see #18:
+# the kiosk waits a fixed 10.48s for seshd and anything started in front of it
+# eats that budget. A `WantedBy=graphical-session.target` would make the target
+# pull this in *before* the kiosk, silently regressing that.
+#
+# Leaving [Install] out is not an oversight to be tidied up later: it makes
+# `systemctl --user enable sesh-librespot` fail loudly rather than quietly
+# reordering the boot.

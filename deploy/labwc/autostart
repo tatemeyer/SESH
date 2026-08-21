@@ -5,9 +5,21 @@
 # service) so that every app it later spawns — Kodi, RetroArch, Moonlight —
 # inherits WAYLAND_DISPLAY and XDG_RUNTIME_DIR and actually appears on the TV.
 
-# Hand this session's Wayland environment to the user systemd manager.
+# Hand this session's Wayland environment to the user systemd manager, then
+# activate the target the units hang off.
+#
+# The import must come first and the ordering is the whole point: a unit
+# inherits the manager's environment as it stood when the unit started, so
+# anything pulled in before this line would come up with no WAYLAND_DISPLAY and
+# every app it spawned would have nowhere to appear.
+#
+# The target is ours rather than graphical-session.target, which nothing here
+# activates and nothing can: it is RefuseManualStart=yes, so `systemctl --user
+# start graphical-session.target` is refused outright. Units hung off it are
+# decorative — `enable` reports success, writes a symlink into a target that
+# never runs, and starts nothing. That was the state this box was found in.
 systemctl --user import-environment WAYLAND_DISPLAY XDG_RUNTIME_DIR
-systemctl --user start seshd.service
+systemctl --user start sesh-session.target
 
 # Wait for seshd to accept connections before pointing the browser at it,
 # so the kiosk never lands on a connection-refused page.
@@ -76,4 +88,9 @@ fi
 # librespot advertises a Spotify Connect device named SESH; seshd moves
 # playback onto it over the Web API. With no speaker paired its PULSE_SINK is
 # unset and the music comes out of the TV.
+#
+# Started here rather than pulled in by the target above, and its unit has no
+# [Install] section so it cannot be enabled into one by mistake. Ordering is
+# the reason: a `WantedBy=graphical-session.target` would start it before
+# Chromium, and the kiosk's patience is a fixed 10.48s budget. That is #18.
 systemctl --user start sesh-librespot.service 2>/dev/null || true

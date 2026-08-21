@@ -165,7 +165,35 @@ SESH_HOME="$(getent passwd "$SESH_USER" | cut -d: -f6)"
 install -Dm644 deploy/seshd.service "${SESH_HOME}/.config/systemd/user/seshd.service"
 install -Dm644 deploy/systemd/sesh-librespot.service \
     "${SESH_HOME}/.config/systemd/user/sesh-librespot.service"
+install -Dm644 deploy/systemd/sesh-session.target \
+    "${SESH_HOME}/.config/systemd/user/sesh-session.target"
 install -Dm755 deploy/pair-speaker.sh /usr/local/bin/sesh-pair-speaker
+
+# Wire seshd into the target labwc's autostart activates.
+#
+# Done here rather than by hand. A one-off `systemctl --user enable` is exactly
+# how this box drifted: both units were enabled into graphical-session.target
+# while nothing activated it, so `is-enabled` said "enabled", systemd started
+# nothing, and the room only came back because one line of shell started it.
+# Provisioning owns this now, so a fresh Pi and this one agree.
+#
+# Written as the symlink `enable` would write, because this script runs as root
+# and the user manager may not be running to ask.
+WANTS="${SESH_HOME}/.config/systemd/user/sesh-session.target.wants"
+install -d -o "$SESH_USER" -g "$SESH_USER" "$WANTS"
+ln -sf "${SESH_HOME}/.config/systemd/user/seshd.service" "${WANTS}/seshd.service"
+chown -h "$SESH_USER":"$SESH_USER" "${WANTS}/seshd.service"
+
+# sesh-librespot has no [Install] section on purpose — autostart starts it last,
+# after Chromium, per #18. A link here would make the target pull it in ahead of
+# the kiosk and eat its 10.48s budget.
+rm -f "${WANTS}/sesh-librespot.service"
+
+# Clear the links a hand-run `systemctl --user enable` left in the target that
+# never runs. Harmless but misleading: they are why `is-enabled` said "enabled"
+# on a box where systemd started neither unit.
+rm -f "${SESH_HOME}/.config/systemd/user/graphical-session.target.wants/seshd.service" \
+      "${SESH_HOME}/.config/systemd/user/graphical-session.target.wants/sesh-librespot.service"
 
 # The speaker drop-in is configuration written by pair-speaker.sh and names a
 # MAC this script cannot know. Never write it, never remove it — the same rule
